@@ -14,7 +14,7 @@ let inited = false;
 let lockedAt = 0;
 let wasLocked = false;
 // pointer-lock fallback: drag-to-look when lock is unavailable (sandboxed iframe, automation, ?test)
-const TEST_MODE = (() => { try { return /test/i.test(location.search || ''); } catch (e) { return false; } })();
+const TEST_MODE = (() => { try { return new URLSearchParams(location.search || '').has('test'); } catch (e) { return false; } })();
 let dragLookOverride = null;   // set via `input.dragLook = bool`
 let dragOk = false;            // a drag started on a non-control element
 let lastGestureAt = -1e9, unlockedAt = -1e9, reqHadGesture = false;

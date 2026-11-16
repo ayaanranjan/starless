@@ -1635,9 +1635,14 @@ async function boot() {
   getCutscenes();
   importLevel(PARAM_LEVEL >= 0 ? PARAM_LEVEL : 0).catch(() => {});
 
+  const inviteCode = cleanText(params.get('join') || '', 12).toUpperCase();
   if (PARAM_LEVEL >= 0) {
     setState('menu');
     startSolo({ levelIndex: PARAM_LEVEL, noCut: true });
+  } else if (inviteCode && /^[A-Z0-9]{4,8}$/.test(inviteCode)) {
+    // Invite link: ?join=CODE drops straight into that crew's lobby.
+    goMenu();
+    joinGame({ code: inviteCode });
   } else {
     goMenu();
   }

@@ -132,11 +132,11 @@ export function buildTerrain(hf, size = 360, seg = 170) {
   const nrm = g.attributes.normal;
   const S = hf.noise;
   const col = new Float32Array(pos.count * 3);
-  const basalt = [0.035, 0.036, 0.032], ochre = [0.30, 0.22, 0.05], olive = [0.12, 0.15, 0.06], ash = [0.16, 0.16, 0.13];
+  const basalt = [0.030, 0.034, 0.030], ochre = [0.40, 0.33, 0.05], olive = [0.12, 0.16, 0.06], ash = [0.16, 0.16, 0.13];
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i), ny = nrm.getY(i);
     const n1 = S.noise(x * 0.045, z * 0.045), n2 = S.noise(x * 0.012 + 50, z * 0.012 - 20), n3 = S.noise(x * 0.2, z * 0.2);
-    let wO = Math.max(0, n2) * 0.9 + Math.max(0, -y - 1.0) * 0.18;
+    let wO = Math.max(0, n2) * 0.9 + Math.max(0, -y - 1.0) * 0.18 + Math.max(0, n3 - 0.35) * 2.2;
     let wV = Math.max(0, n1) * (ny > 0.93 ? 0.9 : 0.2);
     let wA = Math.max(0, -n1) * 0.35;
     const steep = Math.min(1, Math.max(0, (0.9 - ny) * 4));
@@ -149,7 +149,9 @@ export function buildTerrain(hf, size = 360, seg = 170) {
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   const tex = makeDetailTexture();
   tex.repeat.set(size / 5, size / 5);
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, bumpMap: tex, bumpScale: 2.2, roughness: 0.96, metalness: 0.0 });
+  // wet basalt: dark blotches/cracks in the detail map read as glossy (roughnessMap), the rest stays matte
+  const rtex = tex.clone(); rtex.colorSpace = THREE.NoColorSpace; rtex.needsUpdate = true;
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, bumpMap: tex, bumpScale: 2.6, roughnessMap: rtex, roughness: 1.0, metalness: 0.0 });
   const mesh = new THREE.Mesh(g, mat);
   mesh.receiveShadow = true;
   mesh.name = 'l1_terrain';
@@ -237,6 +239,45 @@ export function buildSky(camera, fogColor) {
       }`,
     fog: false,
   });
+  // sky dome: glowing sulfur horizon band -> murky green zenith, drifting cloud noise, lightning flash
+  const skyU = {
+    horizon: { value: new THREE.Color(fogColor) }, zenith: { value: new THREE.Color(0x0b120a) },
+    glow: { value: new THREE.Color(0x8a7c24) }, gdir: { value: dir.clone() }, time: { value: 0 }, flash: { value: 0 },
+  };
+  const domeMat = new THREE.ShaderMaterial({
+    uniforms: skyU, side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: `varying vec3 vDir; void main(){ vDir=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `uniform vec3 horizon; uniform vec3 zenith; uniform vec3 glow; uniform vec3 gdir; uniform float time; uniform float flash;
+      varying vec3 vDir;
+      float hs(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+      float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+        return mix(mix(hs(i),hs(i+vec2(1.0,0.0)),f.x), mix(hs(i+vec2(0.0,1.0)),hs(i+vec2(1.0,1.0)),f.x), f.y); }
+      float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<4;i++){ s+=a*vn(p); p=p*2.03+vec2(1.7,9.2); a*=0.5; } return s; }
+      void main(){
+        vec3 d=normalize(vDir); float h=d.y;
+        vec3 col=mix(horizon, zenith, smoothstep(-0.02, 0.6, h));
+        float band=exp(-abs(h-0.03)*10.0);
+        float gd=max(dot(d,normalize(gdir)),0.0);
+        col+=glow*band*(0.55+0.6*pow(gd,3.0));
+        vec2 uv=d.xz/(max(h,0.0)+0.16);
+        float c=fbm(uv*0.9+vec2(time*0.010,time*0.004));
+        float c2=fbm(uv*2.6-vec2(time*0.018,-time*0.007));
+        float cl=smoothstep(0.38,0.82,c*0.75+c2*0.38);
+        float lit=0.35+0.65*pow(gd,2.0);
+        vec3 cc=mix(mix(zenith,horizon,0.6)*1.15, horizon*1.25+glow*0.35, smoothstep(0.45,0.0,h))*(0.7+0.6*lit);
+        float cm=smoothstep(-0.04,0.10,h);
+        col=mix(col, cc, cl*0.85*cm);
+        col+=glow*(1.0-cl)*pow(gd,10.0)*0.5*cm;
+        col+=vec3(0.42,0.72,0.5)*flash*(0.25+cl*1.1)*cm;
+        col=mix(col, horizon, smoothstep(0.0,-0.12,h));
+        gl_FragColor=vec4(col,1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(R * 1.85, 48, 24), domeMat);
+  dome.renderOrder = -20; dome.frustumCulled = false;
+  group.add(dome);
   const planet = new THREE.Mesh(new THREE.SphereGeometry(pr, 64, 40), planetMat);
   planet.position.copy(dir).multiplyScalar(R);
   planet.rotation.z = 0.32;
@@ -260,9 +301,11 @@ export function buildSky(camera, fogColor) {
   moon.position.copy(new THREE.Vector3(-0.62, 0.5, -0.6).normalize().multiplyScalar(R * 0.95));
   group.add(moon);
   return {
-    group, dir, R,
+    group, dir, R, skyU,
+    setFlash(f) { skyU.flash.value = f; },
     update(dt, camPos) {
       planetMat.uniforms.time.value += dt;
+      skyU.time.value += dt;
       if (camPos) group.position.copy(camPos);
     },
   };
@@ -468,4 +511,140 @@ export function makeBolt(from, groundY) {
     geos.push(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(bp), 16, 0.28, 3, false));
   }
   return geos;
+}
+
+// ---------- volumetric fakes: god-ray shafts + low ground mist (1 draw call each) ----------
+const NOISE_GLSL = `
+  float hs(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+  float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+    return mix(mix(hs(i),hs(i+vec2(1.0,0.0)),f.x), mix(hs(i+vec2(0.0,1.0)),hs(i+vec2(1.0,1.0)),f.x), f.y); }`;
+
+function quadBatch(n, fill, y0 = 0) {
+  const pos = new Float32Array(n * 12), ctr = new Float32Array(n * 12), aw = new Float32Array(n * 12);
+  const idx = [];
+  const cx = [-0.5, 0.5, 0.5, -0.5], cy = [y0, y0, 1, 1];
+  for (let q = 0; q < n; q++) {
+    const it = fill(q);
+    for (let k = 0; k < 4; k++) {
+      const o = (q * 4 + k) * 3;
+      pos[o] = cx[k]; pos[o + 1] = cy[k]; pos[o + 2] = 0;
+      ctr[o] = it.x; ctr[o + 1] = it.y; ctr[o + 2] = it.z;
+      aw[o] = it.w; aw[o + 1] = it.h; aw[o + 2] = it.seed;
+    }
+    const b = q * 4;
+    idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aC', new THREE.BufferAttribute(ctr, 3));
+  g.setAttribute('aW', new THREE.BufferAttribute(aw, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+// slanted additive light shafts falling from the gas giant through cloud gaps (axis-billboarded quads)
+export function buildShafts(H, dir, n = 10, rng = Math.random) {
+  const geo = quadBatch(n, () => {
+    const x = (rng() * 2 - 1) * 150, z = (rng() * 2 - 1) * 150;
+    return { x, y: H(x, z) - 3, z, w: 6 + rng() * 12, h: 120 + rng() * 60, seed: rng() * 100 };
+  });
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { axis: { value: dir.clone().normalize() }, time: { value: 0 }, intensity: { value: 0.22 }, color: { value: new THREE.Color(0xd8d080) } },
+    vertexShader: `attribute vec3 aC; attribute vec3 aW; uniform vec3 axis; varying vec2 vUv; varying float vSeed; varying vec3 vWP;
+      void main(){ vec3 A=normalize(axis); vec3 side=normalize(cross(A, cameraPosition-aC)+vec3(1e-4,0.0,0.0));
+        vec3 wp=aC+A*(position.y*aW.y)+side*(position.x*aW.x*(1.0+position.y*0.8));
+        vUv=vec2(position.x+0.5, position.y); vSeed=aW.z; vWP=wp; gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.0); }`,
+    fragmentShader: `uniform float time; uniform float intensity; uniform vec3 color; varying vec2 vUv; varying float vSeed; varying vec3 vWP;
+      ${NOISE_GLSL}
+      void main(){ float e=sin(vUv.x*3.14159); e*=e;
+        float st=0.35+0.65*vn(vec2(vUv.x*9.0+vSeed, vUv.y*1.5-time*0.05));
+        float v=smoothstep(0.0,0.10,vUv.y)*(1.0-smoothstep(0.35,1.0,vUv.y));
+        float pulse=0.6+0.4*sin(time*0.17+vSeed);
+        float d=distance(cameraPosition,vWP);
+        float a=e*st*v*pulse*smoothstep(5.0,26.0,d)*(1.0-smoothstep(120.0,200.0,d))*intensity;
+        if(a<0.002) discard;
+        gl_FragColor=vec4(color,a); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; mesh.renderOrder = 6; mesh.name = 'l1_shafts';
+  return { mesh, mat, update(dt) { mat.uniforms.time.value += dt; } };
+}
+
+// low drifting ground mist: wide, soft, noise-shaded Y-billboards hugging the terrain, recycled around the camera
+export class GroundMist {
+  constructor(H, n = 34, rng = Math.random) {
+    this.H = H; this.n = n; this.span = 130;
+    this.items = [];
+    for (let i = 0; i < n; i++) {
+      this.items.push({ x: (rng() - 0.5) * this.span, z: (rng() - 0.5) * this.span, lift: 0.2 + rng() * 0.7, sp: 0.4 + rng() * 0.6 });
+    }
+    const geo = quadBatch(n, () => ({ x: 0, y: -999, z: 0, w: 16 + rng() * 18, h: 4 + rng() * 3.5, seed: rng() * 100 }), -0.35);
+    this.ctr = geo.attributes.aC;
+    this.mat = new THREE.ShaderMaterial({
+      uniforms: { time: { value: 0 }, opacity: { value: 0.75 }, color: { value: new THREE.Color(0x6a7440) } },
+      vertexShader: `attribute vec3 aC; attribute vec3 aW; varying vec2 vUv; varying float vSeed; varying vec3 vWP;
+        void main(){ vec3 tc=cameraPosition-aC; vec3 side=normalize(vec3(-tc.z,0.0,tc.x)+vec3(1e-4,0.0,0.0));
+          vec3 wp=aC+side*(position.x*aW.x)+vec3(0.0,position.y*aW.y,0.0);
+          vUv=vec2(position.x+0.5,(position.y+0.35)/1.35); vSeed=aW.z; vWP=wp; gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.0); }`,
+      fragmentShader: `uniform float time; uniform float opacity; uniform vec3 color; varying vec2 vUv; varying float vSeed; varying vec3 vWP;
+        ${NOISE_GLSL}
+        void main(){ vec2 p=vUv*vec2(4.0,1.6)+vec2(time*0.04+vSeed, 0.0);
+          float n=vn(p)*0.65+vn(p*2.3-vec2(time*0.06,0.0))*0.35;
+          float e=smoothstep(0.0,0.35,vUv.x)*smoothstep(1.0,0.65,vUv.x);
+          float v=smoothstep(0.08,0.42,vUv.y)*(1.0-smoothstep(0.42,1.0,vUv.y));
+          float d=distance(cameraPosition,vWP);
+          float a=e*v*(0.25+0.95*n)*smoothstep(2.5,13.0,d)*(1.0-smoothstep(52.0,70.0,d))*opacity;
+          if(a<0.004) discard;
+          gl_FragColor=vec4(color*(0.85+0.3*n),a);
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, fog: false,
+    });
+    this.mesh = new THREE.Mesh(geo, this.mat);
+    this.mesh.frustumCulled = false; this.mesh.renderOrder = 4; this.mesh.name = 'l1_mist';
+  }
+  update(dt, cam, fogColor) {
+    if (!cam) return;
+    this.mat.uniforms.time.value += dt;
+    if (fogColor) this.mat.uniforms.color.value.copy(fogColor).multiplyScalar(2.3);
+    const half = this.span / 2, a = this.ctr.array;
+    for (let i = 0; i < this.n; i++) {
+      const it = this.items[i];
+      it.x += 0.35 * it.sp * dt; it.z -= 0.18 * it.sp * dt;
+      if (it.x - cam.x > half) it.x -= this.span; else if (it.x - cam.x < -half) it.x += this.span;
+      if (it.z - cam.z > half) it.z -= this.span; else if (it.z - cam.z < -half) it.z += this.span;
+      let y = -999;
+      try { y = this.H(it.x, it.z) + it.lift; } catch (e) { /* */ }
+      for (let k = 0; k < 4; k++) { const o = (i * 4 + k) * 3; a[o] = it.x; a[o + 1] = y; a[o + 2] = it.z; }
+    }
+    this.ctr.needsUpdate = true;
+  }
+}
+
+// world-space procedural detail for rocks/spires: vertical wet streaks, sulfur crust patches, glossy runnels
+export function addRockDetail(mat) {
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRW;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec4 rwp = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          rwp = instanceMatrix * rwp;
+        #endif
+        vRW = (modelMatrix * rwp).xyz;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vRW;\n${NOISE_GLSL}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float rk1 = vn(vec2(vRW.x * 1.9 + vRW.z * 1.3, vRW.y * 0.09));
+        float rk2 = vn(vRW.xz * 0.45 + vRW.y * 0.35);
+        float rk3 = vn(vRW.xy * 3.1 + vRW.z * 2.3);
+        diffuseColor.rgb *= 0.6 + 0.65 * rk1 + 0.25 * rk3;
+        float sulf = smoothstep(0.62, 0.86, rk2);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.25, 0.04), sulf * 0.7);`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor *= mix(0.45, 1.0, smoothstep(0.25, 0.7, rk1)) ;`);
+  };
+  mat.customProgramCacheKey = () => 'l1rock';
+  return mat;
 }

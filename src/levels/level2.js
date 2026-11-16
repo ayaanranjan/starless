@@ -1,6 +1,7 @@
 // CHAPTER II — THE HOLLOW ARK  (owner: L2)
 // Biomechanical alien warp-ship. Tile-map built; 3 warp cores -> 3 universe jumps -> engage hub drive.
 import * as THREE from 'three';
+import { L2Fx, paintBackdrop } from './l2/fx.js';
 
 const CELL = 4, WALL_H = 5, HUB_H = 16;
 // '#' wall  'V' viewport  'R' rocket wall  '.' corridor  'h' hub  'X' drive  'c' core chamber  'N/E/W' core console
@@ -158,11 +159,12 @@ export default class Level2 {
     const ctx = this.ctx;
     ctx.setOxygenDrain?.(0); ctx.footstepSound = 'footstep_metal'; ctx.setGravity?.(-18);
     try { const m = await import('../creatures/creatures.js'); this.createCreature = m.createCreature || null; } catch (e) { console.warn('[L2] creatures unavailable', e); }
+    if (this._disposed) return; // level was torn down while the import was in flight
     this.low = ctx.quality === 'low';
     this.R = mulberry32(0xA2C0FFEE);
     this.root = new THREE.Group(); this.root.name = 'L2'; ctx.scene.add(this.root);
     const steps = ['_buildPalette', '_buildTextures', '_buildMaterials', '_buildEnv', '_buildShell', '_buildDetails', '_buildHub',
-      '_buildCores', '_buildPods', '_buildDoors', '_buildRocket', '_buildPickups', '_buildCrystals', '_buildColliders', '_buildCreatureSpecs'];
+      '_buildCores', '_buildPods', '_buildDoors', '_buildRocket', '_buildPickups', '_buildCrystals', '_buildFx', '_buildColliders', '_buildCreatureSpecs'];
     for (const s of steps) { try { this[s](); } catch (e) { console.error('[L2] build step failed', s, e); } }
     // accept the level save ({cores}) or a whole store record ({levelSave:{cores}})
     const sv = save && typeof save === 'object' ? (Array.isArray(save.cores) ? save : (save.levelSave && Array.isArray(save.levelSave.cores) ? save.levelSave : null)) : null;
@@ -242,6 +244,7 @@ export default class Level2 {
     this.tBack = [0, 1, 2, 3].map((k) => this._backdropTex(k));
   }
   _backdropTex(kind) {
+    try { const t = new THREE.CanvasTexture(paintBackdrop(kind, mulberry32(991 + kind * 31))); t.colorSpace = THREE.SRGBColorSpace; this.disp.push(t); return t; } catch (e) { console.warn('[L2] backdrop', e); }
     const R = mulberry32(777 + kind * 31), c = canvas(1024, 512), g = c.getContext('2d');
     const neb = (cols, n, a, comp) => {
       g.globalCompositeOperation = comp || 'lighter';
@@ -284,6 +287,7 @@ export default class Level2 {
   }
 
   _mat(m) { this.disp.push(m); return m; }
+  _buildFx() { const f = new L2Fx(this); f.build(); this.fx2 = f; }
   _buildMaterials() {
     const v = this.PALC[0].vein;
     this.wallMat = this._mat(new THREE.MeshStandardMaterial({ map: this.tWall, emissiveMap: this.tWallE, emissive: v.clone(), emissiveIntensity: 0.9, roughness: 0.82, metalness: 0.15, bumpMap: this.tWall, bumpScale: 2.5 }));
@@ -717,8 +721,8 @@ export default class Level2 {
     this.specs = [
       { type: 'crawler', pos: mid(north), patrol: north },
       { type: 'crawler', pos: mid(east), patrol: east },
-      { type: 'mimic', pos: V(16, 9), patrol: [V(16, 9)] },
-      { type: 'mimic', pos: V(2, 15), patrol: [V(2, 15)] },
+      { type: 'mimic', pos: V(16, 9), patrol: [V(16, 9), north[Math.floor(north.length / 2)].clone(), north[north.length - 2].clone(), mid(east)] },
+      { type: 'mimic', pos: V(2, 15), patrol: [V(2, 15), west[Math.floor(west.length / 2)].clone(), west[west.length - 2].clone(), east[east.length - 2].clone()] },
       { type: 'crawler', pos: mid(west), patrol: west },
       { type: 'crawler', pos: ring[4].clone(), patrol: ring },
       { type: 'crawler', pos: east[Math.floor(east.length / 3)].clone(), patrol: east },
@@ -773,6 +777,7 @@ export default class Level2 {
       else { o.mat.emissive.copy(c.vein).multiplyScalar(0.3); o.light.color.copy(c.vein); }
     }
     if (this.driveCon && this.nCores >= 3) this.driveCon.pm.emissive.copy(this.universe === 3 ? this._dimCol : c.light);
+    try { this.fx2?.applyPal(c, this.universe); } catch (e) { /* */ }
   }
 
   // ------------------------------------------------------------------ gameplay
@@ -893,6 +898,7 @@ export default class Level2 {
       }
       this.rocketLight.intensity = Math.max(4 + Math.random() * 3, this.rocketLight.intensity - dt * 90);
       this._updateDoors(dt, false);
+      this.fx2?.update(dt, t, hb);
     } catch (e) { if (!this._warned) { this._warned = true; console.error('[L2] update visuals', e); } }
 
     // creatures
@@ -948,6 +954,7 @@ export default class Level2 {
   getSaveData() { return { cores: this.cores.slice() }; }
 
   dispose() {
+    this._disposed = true;
     for (const l of this.loops) { try { l?.stop?.(0.5); } catch (e) { /* */ } }
     this.loops.length = 0; this.loopRecs.length = 0;
     for (const c of this.creatures) { try { c?.dispose?.(); } catch (e) { /* */ } }

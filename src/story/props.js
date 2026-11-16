@@ -72,18 +72,23 @@ export function makeStars(opts = {}) {
   const mat = new THREE.ShaderMaterial({
     uniforms: { uDark: { value: opts.dark ?? 0 }, uTime: { value: 0 }, uPix: { value: pixRatio() }, uOpacity: { value: 1 } },
     vertexShader: `attribute vec3 aColor; attribute float aSize; attribute float aKill;
-      uniform float uDark, uTime, uPix; varying vec3 vC; varying float vA;
+      uniform float uDark, uTime, uPix; varying vec3 vC; varying float vA; varying float vBig;
       void main(){
         vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
         float alive = clamp((aKill - uDark) * 12.0, 0.0, 1.0);
         float dying = 1.0 - smoothstep(0.0, 0.1, abs(aKill - uDark - 0.07));
-        float tw = 0.82 + 0.18 * sin(uTime * (1.5 + fract(aKill * 91.7 + position.x) * 5.0) + position.y * 0.01);
+        float sp = 1.5 + fract(aKill * 91.7 + position.x) * 5.0;
+        float tw = 0.72 + 0.18 * sin(uTime * sp + position.y * 0.01) + 0.1 * sin(uTime * sp * 2.7 + position.z);
         float fl = step(0.5, fract(sin(floor(uTime * 18.0) + position.z) * 43758.5453));
         vA = alive * tw * (1.0 - dying * 0.8 * fl);
-        vC = aColor; gl_PointSize = aSize * uPix * (0.5 + 0.5 * alive);
+        vBig = smoothstep(3.2, 5.4, aSize);
+        vC = aColor; gl_PointSize = aSize * uPix * (0.5 + 0.5 * alive) * (1.0 + 2.2 * vBig);
       }`,
-    fragmentShader: `uniform float uOpacity; varying vec3 vC; varying float vA;
-      void main(){ vec2 d = gl_PointCoord - 0.5; float a = exp(-dot(d, d) * 16.0) * vA * uOpacity; if (a < 0.004) discard; gl_FragColor = vec4(vC * a, a); }`,
+    fragmentShader: `uniform float uOpacity; varying vec3 vC; varying float vA; varying float vBig;
+      void main(){ vec2 d = gl_PointCoord - 0.5; float k = 1.0 + 2.2 * vBig; float r2 = dot(d, d);
+        float a = exp(-r2 * 16.0 * k * k);
+        a += vBig * (exp(-abs(d.x) * 70.0) + exp(-abs(d.y) * 70.0)) * (1.0 - smoothstep(0.0, 0.24, r2)) * 0.45;
+        a *= vA * uOpacity; if (a < 0.004) discard; gl_FragColor = vec4(vC * a, a); }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const points = new THREE.Points(geo, mat);
@@ -244,7 +249,10 @@ export function makeHarvester(opts = {}) {
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `uniform float uTime, uI; uniform vec3 uColor; varying vec2 vUv;
       void main(){ float p = fract(vUv.x * 2.0 - uTime * 0.16); float pulse = smoothstep(0.0, 0.04, p) * smoothstep(0.22, 0.04, p);
-        float b = uI * (0.35 + 1.8 * pulse); gl_FragColor = vec4(uColor * b, 1.0); }`,
+        float p2 = fract(vUv.x * 5.0 - uTime * 0.37 + 0.3); float pulse2 = smoothstep(0.0, 0.02, p2) * smoothstep(0.1, 0.02, p2);
+        float flick = 0.85 + 0.15 * sin(uTime * 7.0 + vUv.x * 40.0);
+        float b = uI * (0.35 + 2.4 * pulse + 0.8 * pulse2) * flick;
+        gl_FragColor = vec4(uColor * b + vec3(0.55, 1.0, 1.0) * pulse * uI * 0.7, 1.0); }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const NV = opts.veins ?? 10;
@@ -256,12 +264,12 @@ export function makeHarvester(opts = {}) {
       const r = harvR(u) * 1.1;
       cp.push(new THREE.Vector3(Math.sin(a) * r, y, Math.cos(a) * r));
     }
-    body.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cp), 140, 1.8, 4, false), veinMat));
+    body.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cp), 140, opts.veinR ?? 1.8, 4, false), veinMat));
   }
   // maw core + light
   const coreMat = new THREE.MeshBasicMaterial({ color: 0xc8f6ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
   const core = new THREE.Mesh(new THREE.SphereGeometry(52, 24, 16), coreMat); core.position.y = HL - 70; body.add(core);
-  const mawLight = new THREE.PointLight(0x9ff2ff, 0, 0, 0); mawLight.position.y = HL + 30; body.add(mawLight);
+  const mawLight = new THREE.PointLight(0x9ff2ff, 0, 1600, 0); mawLight.position.y = HL + 30; body.add(mawLight);
   // maw petals
   const petals = [];
   const petalGeo = new THREE.ConeGeometry(16, 150, 6).translate(0, 75, 0);
@@ -324,12 +332,16 @@ export function makeBeam(color = 0xdff4ff, rTop = 60, rBot = 40) {
       void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`,
     fragmentShader: NOISE + `uniform float uTime, uI, uReach; uniform vec3 uColor; varying vec2 vUv; varying vec3 vN; varying vec3 vV;
       void main(){
-        float edge = 1.0 - abs(dot(normalize(vN), normalize(vV)));
-        float n = vnoise(vec3(vUv.x * 14.0, vUv.y * 9.0 + uTime * 2.6, uTime * 0.5));
-        float bands = 0.6 + 0.4 * sin(vUv.y * 90.0 + uTime * 12.0);
-        float reach = smoothstep(1.0 - uReach - 0.06, 1.0 - uReach + 0.01, vUv.y);
-        float a = (0.18 + 0.82 * pow(edge, 1.6)) * (0.4 + 0.8 * n) * bands * uI * reach;
-        gl_FragColor = vec4(uColor * a, a);
+        float ndv = abs(dot(normalize(vN), normalize(vV))); float edge = 1.0 - ndv;
+        float body = 0.3 * pow(ndv, 1.5) + 0.9 * pow(edge, 2.0);
+        float ang = vUv.x * 6.2831853; vec2 ring = vec2(cos(ang), sin(ang));
+        float n = fbm3(vec3(ring * 1.8, vUv.y * 8.0 - uTime * 2.2));
+        float fine = vnoise(vec3(ring * 6.0, vUv.y * 50.0 - uTime * 9.0));
+        float streaks = pow(vnoise(vec3(ring * 9.0, vUv.y * 1.5 - uTime * 0.6)), 3.0);
+        float bands = 0.72 + 0.28 * sin(vUv.y * 70.0 - uTime * 10.0 + n * 6.0);
+        float reach = smoothstep(1.0 - uReach - 0.08, 1.0 - uReach + 0.01, vUv.y);
+        float a = body * (0.3 + 1.1 * n + 0.35 * fine + 1.4 * streaks) * bands * uI * reach * smoothstep(0.0, 0.05, vUv.y) * 0.6;
+        gl_FragColor = vec4(uColor * a + vec3(a * a * 0.18), a);
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
   });

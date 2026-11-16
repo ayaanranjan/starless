@@ -26,10 +26,20 @@ uniform float uTime; uniform float uSeed; uniform float uFade; uniform vec3 uCor
 varying vec2 vUv;
 ${GLSL_NOISE}
 void main(){
-  float n = n3(vec3(vUv * vec2(3.0, 5.0) + vec2(uSeed * 7.0, -uTime * 0.7), uTime * 0.2));
+  // layered, domain-warped smoke: a coarse billow warps a finer churn, plus stringy fibres that stream downward
+  float w1 = n3(vec3(vUv * vec2(3.0, 5.0) + vec2(uSeed * 7.0, -uTime * 0.7), uTime * 0.2));
+  float w2 = n3(vec3(vUv * vec2(7.0, 12.0) + vec2(w1 * 1.8 + uSeed * 3.0, -uTime * 1.25), uTime * 0.37));
+  float n = w1 * 0.62 + w2 * 0.38;
+  float fib = 0.5 + 0.5 * sin(vUv.x * 21.0 + w1 * 6.0 + uSeed * 9.0 + vUv.y * 2.0);
+  fib = fib * fib * fib;
   float ex = abs(vUv.x - 0.5) * 2.0;
-  float a = (0.45 + 0.55 * n) * (1.0 - smoothstep(0.45, 1.0, ex + n * 0.35)) * smoothstep(0.0, 0.55, vUv.y + n * 0.2);
-  vec3 col = mix(uCore, uEdge, smoothstep(0.25, 0.95, ex + (1.0 - vUv.y) * 0.45 * n));
+  float a = (0.4 + 0.6 * n) * (1.0 - smoothstep(0.4, 1.0, ex + n * 0.4)) * smoothstep(0.0, 0.6, vUv.y + n * 0.25);
+  a *= 0.7 + 0.55 * fib;
+  // smoky near-black body; violet only on the ragged fringe, plus hot inner filaments that pulse like a heartbeat
+  vec3 col = mix(uCore, uEdge * 0.32, smoothstep(0.5, 1.05, ex + (1.0 - vUv.y) * 0.45 * n));
+  float beat = 0.55 + 0.45 * pow(abs(sin(uTime * 2.1 + uSeed * 4.0)), 6.0);
+  float fil = smoothstep(0.6, 0.86, w2) * (1.0 - ex * 0.8) * smoothstep(0.15, 0.75, vUv.y);
+  col += uEdge * fil * 1.9 * beat + uEdge * fib * 0.12 * (1.0 - ex);
   a *= uFade;
   if (a < 0.015) discard;
   gl_FragColor = vec4(col, a * 0.85);
@@ -186,7 +196,7 @@ export class Wraith extends CreatureBase {
     if (this.blinkT <= 0) { this.blinkT = rand(1.5, 6); this.blink = 0.14; }
     this.blink -= dt;
     const glow = (st === 'chase' || st === 'attack' ? 1.6 : 0.9) * (0.85 + 0.15 * Math.sin(t * 7)) * this.fade;
-    this.eyeMat.color.setRGB(0.8 * glow, 0.75 * glow, 1.2 * glow);
+    this.eyeMat.color.setRGB(2.1 * glow, 1.9 * glow, 3.1 * glow); // HDR so the eyes bloom
     this.eyeMat.opacity = this.blink > 0 ? 0 : this.fade;
     const B = this.body;
     B.position.y = Math.sin(t * 1.3) * 0.13;

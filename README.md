@@ -11,7 +11,9 @@ A co-op space horror game that runs in the browser. 1–4 players. Three.js + We
 3. **The Dark Between** – floating wreckage in a dark-matter void, watched by something enormous. Open the Gate, run for the wormhole.
 
 ## Play
-- **Solo:** New Game. **Co-op:** one person picks *Host Co-op* and shares the 5-letter crew code; friends pick *Join Co-op*.
+**Live:** https://starless-one.vercel.app (mirror: https://ayaanranjan.github.io/starless/)
+
+- **Solo:** New Game. **Co-op:** one person picks *Host Co-op* and hits **Copy invite link** (or reads out the 5-letter crew code); friends open the link or pick *Join Co-op*.
 - Controls: WASD move · mouse look · Shift sprint · C crouch (quieter) · Space jump · F flashlight (stuns monsters, drains battery) · E interact / hold · T chat · Esc pause.
 - Progress saves at checkpoints (browser localStorage). The host's save decides where the crew starts.
 
@@ -19,7 +21,13 @@ A co-op space horror game that runs in the browser. 1–4 players. Three.js + We
 ```bash
 python3 -m http.server 8642
 ```
-Open http://localhost:8642. Dev shortcuts: `?level=2` jumps to a chapter, `?nocut` skips cutscenes, `?god` disables damage.
+Open http://localhost:8642. Dev shortcuts: `?level=2` jumps to a chapter, `?nocut` skips cutscenes, `?god` disables damage, `?test` uses drag-to-look instead of pointer lock, `?join=CODE` joins a crew, `?nohud&pose=x,z,yaw,pitch` frames screenshots.
+
+## Deploy
+```bash
+vercel deploy --prod
+```
+from this folder (the Vercel CLI is linked to the `starless` project). `git push` also updates the GitHub Pages mirror.
 
 ## How multiplayer works
 Peer-to-peer WebRTC through PeerJS's free public signaling server. The host's browser runs the monsters and objectives; everyone else sends their position 15×/sec and gets the world state back 10×/sec. No game server to pay for. Very strict networks (some school Wi-Fi) can block WebRTC.

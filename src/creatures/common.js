@@ -103,6 +103,67 @@ float n3(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 *
              mix(mix(h3(i + vec3(0,0,1)), h3(i + vec3(1,0,1)), f.x), mix(h3(i + vec3(0,1,1)), h3(i + vec3(1,1,1)), f.x), f.y), f.z); }
 `;
 
+// ---------- premium creature materials (graphics pass) ----------
+// SKIN_U.uFlash: 1 while the local player's flashlight is on (set in CreatureBase.update). Shaders use it
+// with a view-space cone test so wet skin rims / eye-shine flare up when the beam lands on a creature.
+export const SKIN_U = { uFlash: { value: 1 } };
+const ff = (v) => (Number.isInteger(v) ? v + '.0' : String(v));
+const FLASH_GLSL = `
+uniform float uFlash;
+float flashAmt(vec3 vp){
+  float d = length(vp); vec3 dir = vp / max(d, 1e-4);
+  return uFlash * smoothstep(0.86, 0.985, dir.z) / (1.0 + d * d * 0.012);
+}
+`;
+// Wet, glistening flesh: clearcoat + sheen, procedural mottling, low-roughness glisten bands, fresnel rim.
+export function wetSkin(o = {}) {
+  const { rim = 0x9ec4d6, rimStrength = 0.6, rimPower = 3.0, bands = 1, mottle = 0.3, scale = 16, ...p } = o;
+  const m = new THREE.MeshPhysicalMaterial(Object.assign({ color: 0x1a1714, roughness: 0.42, metalness: 0.04,
+    clearcoat: 0.85, clearcoatRoughness: 0.14, sheen: 0.55, sheenColor: new THREE.Color(0x5a3442), sheenRoughness: 0.5 }, p));
+  const uRim = { value: new THREE.Color(rim).multiplyScalar(rimStrength) };
+  m.userData.rim = uRim;
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uFlash = SKIN_U.uFlash; sh.uniforms.uRim = uRim;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSkP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSkP = position;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSkP;\nuniform vec3 uRim;\n' + FLASH_GLSL + GLSL_NOISE)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+  float skN = n3(vSkP * ${ff(scale)}) * 0.6 + n3(vSkP * ${ff(scale * 3)}) * 0.4;
+  float skBand = smoothstep(0.55, 0.8, n3(vSkP * vec3(${ff(scale * 0.4)}, ${ff(scale * 1.7)}, ${ff(scale * 0.4)})));
+  roughnessFactor = clamp(roughnessFactor + (skN - 0.5) * 0.55 - skBand * ${ff(bands * 0.32)}, 0.05, 1.0);
+  diffuseColor.rgb *= mix(${ff(1 - mottle)}, ${ff(1 + mottle)}, skN);`)
+      .replace('#include <opaque_fragment>', `float skF = pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), ${ff(rimPower)});
+  outgoingLight += uRim * skF * (0.06 + 0.6 * flashAmt(vViewPosition));
+  #include <opaque_fragment>`);
+  };
+  const key = 'wetskin|' + [rimPower, bands, mottle, scale].join('|');
+  m.customProgramCacheKey = () => key;
+  return m;
+}
+// Eye-shine for Standard/Physical emissive materials: emissive flares when the flashlight beam hits.
+export function eyeShine(mat, gain = 3) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uFlash = SKIN_U.uFlash;
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + FLASH_GLSL)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+  totalEmissiveRadiance *= 1.0 + ${ff(gain)} * flashAmt(vViewPosition);`);
+  };
+  const key = 'eyeshine|' + gain;
+  mat.customProgramCacheKey = () => key;
+  return mat;
+}
+// Glossy black keratin for claws / mandibles / talons.
+export function clawMat(color = 0x0b0908) {
+  return new THREE.MeshPhysicalMaterial({ color, roughness: 0.22, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.06 });
+}
+function updateFlashU(ctx) {
+  const p = localPlayer(ctx);
+  SKIN_U.uFlash.value = (p && p.flashlight && !p.downed && (p.battery ?? 100) > 0) ? 1 : 0;
+}
+
 // tapered limb geometry hanging DOWN from its pivot (pivot at y=0, extends to -len)
 export function limbGeo(rTop, rBot, len, radial = 7) {
   const g = new THREE.CylinderGeometry(rTop, rBot, len, radial, 1);
@@ -207,6 +268,7 @@ export class CreatureBase {
       this.animSpeed = damp(this.animSpeed, inst, 10, dt);
       this._prev.copy(this.position);
     }
+    try { updateFlashU(this.ctx); } catch (e) { /* ignore */ }
     try { this.animate(dt); } catch (e) { this._warn(e); }
     this.object.rotation.y = this.yaw;
     // distance cull: far creatures are fogged out anyway, skip their draw calls
@@ -329,7 +391,13 @@ export class CreatureBase {
   }
   nextPatrolPoint(out) {
     if (this.patrol.length) {
-      this.patrolIdx = (this.patrolIdx + 1 + (Math.random() < 0.25 ? 1 : 0)) % this.patrol.length;
+      let step = 1;
+      if (Math.random() < 0.25 && this.patrol.length > 2) {
+        // only cut a corner when the point after next is in plain sight (corridor patrols would clip walls)
+        const skip = this.patrol[(this.patrolIdx + 2) % this.patrol.length];
+        try { if (this.ctx?.world?.lineOfSight?.(this.position, skip)) step = 2; } catch (e) { /* keep step 1 */ }
+      }
+      this.patrolIdx = (this.patrolIdx + step) % this.patrol.length;
       return out.copy(this.patrol[this.patrolIdx]);
     }
     const a = Math.random() * Math.PI * 2, r = rand(3, 9);

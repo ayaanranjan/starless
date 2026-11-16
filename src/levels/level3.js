@@ -41,6 +41,15 @@ float vn(vec3 x){ vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 *
   return mix(mix(mix(h3(i), h3(i + vec3(1.0,0.0,0.0)), f.x), mix(h3(i + vec3(0.0,1.0,0.0)), h3(i + vec3(1.0,1.0,0.0)), f.x), f.y),
              mix(mix(h3(i + vec3(0.0,0.0,1.0)), h3(i + vec3(1.0,0.0,1.0)), f.x), mix(h3(i + vec3(0.0,1.0,1.0)), h3(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z); }
 float fbm(vec3 p){ float a = 0.5; float s = 0.0; for (int i = 0; i < OCT; i++){ s += a * vn(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; } return s; }
+// round, jittered, twinkling stars (one hash cell per star; no pow on negatives)
+vec3 stars(vec3 d, float sc, float th, float tw){
+  vec3 p = d * sc; vec3 c = floor(p); vec3 f = fract(p) - 0.5;
+  float h = h3(c); float on = step(th, h); float k = h3(c + 17.3);
+  vec3 o = vec3(k, h3(c + 4.1), h3(c + 8.7)) - 0.5;
+  float s = 1.0 - smoothstep(0.0, 0.3, length(f - o * 0.5)); s *= s;
+  float tws = 0.55 + 0.45 * sin(uTime * (0.8 + 3.0 * k) * tw + h * 91.0);
+  return mix(vec3(0.62, 0.7, 1.0), vec3(1.0, 0.78, 0.92), k) * s * on * tws * (0.5 + (h - th) / (1.0 - th));
+}
 void main(){
   vec3 d = normalize(vDir);
   float t = uTime * (0.01 + uCollapse * 0.06);
@@ -49,16 +58,30 @@ void main(){
   float n1 = fbm(q + w * 1.3);
   float n2 = fbm(d * 4.2 - vec3(t * 0.8, 0.0, t) + w * 0.6);
   float n3 = fbm(d * 2.7 + vec3(5.2, 1.3, -2.0) + t * 0.4);
-  vec3 col = vec3(0.010, 0.004, 0.022);
+  vec3 col = vec3(0.006, 0.002, 0.016);
+  // far veil: broad dim crimson/indigo layer behind everything (depth)
+  col += mix(vec3(0.05, 0.01, 0.09), vec3(0.09, 0.012, 0.05), n3) * smoothstep(0.3, 0.75, w) * 0.7;
   float neb = smoothstep(0.38, 0.82, n1);
   col += vec3(0.20, 0.05, 0.34) * neb * 0.6;
   col += vec3(0.36, 0.04, 0.24) * smoothstep(0.5, 0.88, n2) * neb * 0.55;
   col += vec3(0.02, 0.22, 0.26) * smoothstep(0.55, 0.9, n3) * 0.4;
+  // bright filaments where the nebula folds
+  col += vec3(0.42, 0.22, 0.75) * clamp(1.0 - abs(n1 - 0.6) * 9.0, 0.0, 1.0) * neb * 0.24;
   col *= 0.5 + 0.5 * smoothstep(0.2, 0.62, n2);
+  // dark dust lanes cutting the glow
+  col *= 1.0 - 0.6 * smoothstep(0.56, 0.74, n2) * (1.0 - smoothstep(0.5, 0.7, n1));
   float bq = d.y * 3.2 + 0.35 * sin(d.x * 2.3 + d.z); float band = exp(-bq * bq); // no pow(neg, 2.0): undefined in GLSL (NaN on Metal)
   col += vec3(0.07, 0.035, 0.12) * band * (0.35 + 0.65 * n1);
-  vec3 sp = floor(d * 260.0);
-  col += vec3(0.75, 0.65, 1.0) * step(0.9985, h3(sp)) * (0.3 + 0.7 * h3(sp + 7.0)) * 0.6;
+  // luminous core far beyond the Gate: backlights the ring and the Watcher
+  float gd = max(dot(d, normalize(vec3(-0.08, 0.17, -1.0))), 0.0);
+  float g2 = gd * gd; float g4 = g2 * g2; float g8 = g4 * g4; float g64 = g8 * g8; g64 *= g64; g64 *= g64;
+  col += vec3(0.22, 0.06, 0.40) * g8 * (0.5 + 0.9 * n1) * 0.9 + vec3(0.55, 0.42, 0.95) * g64 * 0.3;
+  // bottomless abyss: darker below the horizon, a faint maw glowing far beneath
+  float below = 1.0 - smoothstep(-0.55, 0.02, d.y);
+  col = mix(col, col * 0.3, below * 0.8);
+  float nad = max(-d.y, 0.0); float nad4 = nad * nad; nad4 *= nad4;
+  col += vec3(0.12, 0.02, 0.2) * nad4 * nad * (0.3 + 0.9 * n2) * 0.8;
+  col += (stars(d, 64.0, 0.982, 1.0) * 1.1 + stars(d, 130.0, 0.986, 1.7) * 0.7 + stars(d, 34.0, 0.994, 0.6) * 1.8) * (1.0 - below * 0.6);
   col = mix(col, col * vec3(1.7, 0.55, 1.15) + vec3(0.05, 0.0, 0.025) * n1, uCollapse * 0.65);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
@@ -74,14 +97,93 @@ void main(){
   float core = pow(vF, 2.2);
   float ends = smoothstep(0.0, 0.07, vUv.x) * (1.0 - smoothstep(0.93, 1.0, vUv.x));
   vec3 col = mix(uColA, uColB, b);
-  gl_FragColor = vec4(col * core * (0.22 + 0.78 * b) * (0.55 + 0.45 * fil) * ends * uBoost, 1.0);
+  float pk = 0.5 + 0.5 * sin(vUv.x * 14.0 - uTime * 2.2); pk *= pk; pk *= pk; pk *= pk; // travelling energy packets
+  gl_FragColor = vec4(col * core * ((0.22 + 0.78 * b) * (0.55 + 0.45 * fil) + pk * 1.4) * ends * uBoost * 1.35, 1.0);
 }`;
+// soft outer halo tube around each stream (front faces only, cheap additive)
+const SGLOW_FS = `uniform float uTime; uniform vec3 uColA; uniform vec3 uColB; uniform float uBoost; varying vec2 vUv; varying float vF;
+void main(){ float ends = smoothstep(0.0, 0.1, vUv.x) * (1.0 - smoothstep(0.9, 1.0, vUv.x));
+  float b = 0.5 + 0.5 * sin(vUv.x * 23.0 - uTime * 0.9); float h = vF * vF * vF;
+  gl_FragColor = vec4(mix(uColA, uColB, b) * h * ends * 0.17 * uBoost, 1.0); }`;
+// void haze sheets: world-anchored noise, follow the camera in XZ, fade radially
+const HAZE_VS = `varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
+const HAZE_FS = `uniform sampler2D uNoise; uniform float uTime; uniform vec3 uCol; uniform float uA; uniform vec3 uCam; uniform float uSeed; varying vec3 vW;
+void main(){ vec2 p = vW.xz * 0.0045 + uSeed;
+  float a = texture2D(uNoise, p + vec2(uTime * 0.004, uTime * 0.002)).r; float b = texture2D(uNoise, p * 2.3 - vec2(uTime * 0.006, -uTime * 0.003)).r;
+  float n = smoothstep(0.3, 0.8, a * 0.65 + b * 0.45);
+  float fade = 1.0 - smoothstep(120.0, 440.0, length(vW.xz - uCam.xz)); float near = smoothstep(3.0, 30.0, abs(uCam.y - vW.y));
+  gl_FragColor = vec4(uCol * n * fade * near * uA, 1.0); }`;
+// Gate god rays: camera-facing quad behind the ring, radial streaks from the rim
+const RAYS_FS = `uniform float uTime; uniform float uI; uniform float uOpen; varying vec2 vUv;
+void main(){ vec2 p = (vUv - 0.5) * 96.0; float r = length(p); float a = atan(p.y, p.x);
+  float s1 = 0.5 + 0.5 * sin(a * 11.0 + uTime * 0.17 + sin(a * 4.0 - uTime * 0.11) * 1.9);
+  float s2 = 0.5 + 0.5 * sin(a * 27.0 - uTime * 0.29 + sin(a * 3.0 + uTime * 0.07) * 2.6);
+  s1 *= s1; s1 *= s1; s2 *= s2; s2 *= s2; s2 *= s2;
+  float rays = s1 * 0.75 + s2 * 0.55 + 0.08;
+  float ro = max(r - 11.0, 0.0); float fall = exp(-ro * 0.085) * smoothstep(8.5, 12.5, r);
+  float rq = (r - 12.2) / 2.4; float ring = exp(-rq * rq); float core = exp(-r * r * 0.012) * uOpen;
+  float edge = 1.0 - smoothstep(32.0, 48.0, r);
+  vec3 col = vec3(0.5, 0.28, 1.0) * rays * fall * 0.6 + vec3(0.62, 0.45, 1.0) * ring * 0.4 + vec3(0.7, 0.85, 1.0) * core * 0.9;
+  gl_FragColor = vec4(col * edge * uI, 1.0); }`;
+// slow-falling motes, wrapped in a box around the camera (GPU-animated, no per-frame CPU)
+const MOTE_VS = `attribute vec3 aSeed; uniform float uTime; uniform vec3 uCam; uniform float uScale; varying float vA; varying float vT;
+void main(){ vec3 box = vec3(70.0, 46.0, 70.0); vec3 p = aSeed * box;
+  p.y -= uTime * (0.35 + fract(aSeed.x * 7.3) * 0.5); p.x += sin(uTime * 0.3 + aSeed.z * 20.0) * 1.5; p.z += cos(uTime * 0.25 + aSeed.x * 17.0) * 1.5;
+  p = mod(p - uCam + box * 0.5, box) + uCam - box * 0.5;
+  vec4 mv = viewMatrix * vec4(p, 1.0); gl_PointSize = clamp((0.08 + 0.12 * fract(aSeed.y * 13.1)) * uScale / max(0.1, -mv.z), 1.0, 6.0);
+  vec3 qd = abs(p - uCam) / (box * 0.5); float edge = 1.0 - smoothstep(0.7, 1.0, max(qd.x, max(qd.y, qd.z)));
+  vA = edge * (0.5 + 0.5 * sin(uTime * (1.0 + aSeed.z * 3.0) + aSeed.y * 30.0)); vT = aSeed.x; gl_Position = projectionMatrix * mv; }`;
+const MOTE_FS = `varying float vA; varying float vT;
+void main(){ float a = 1.0 - smoothstep(0.0, 0.5, length(gl_PointCoord - 0.5)); gl_FragColor = vec4(mix(vec3(0.55, 0.42, 0.95), vec3(0.75, 0.9, 1.0), vT) * a * a * vA * 0.6, 1.0); }`;
+// MeshStandardMaterial patches: rock rim light + glowing under-veins; crystal refraction-like shimmer
+const ROCK_FX = `{
+  vec3 fxV = normalize(vViewPosition); vec3 fxNW = inverseTransformDirection(normal, viewMatrix);
+  float fxR = 1.0 - clamp(abs(dot(normal, fxV)), 0.0, 1.0); float fxSide = 1.0 - smoothstep(0.3, 0.8, fxNW.y);
+  float fxDep = clamp(-vFxP.y * 0.16, 0.0, 1.0);
+  totalEmissiveRadiance += mix(uFxCol, uFxCol2, fxDep) * fxR * fxR * fxR * fxSide * uFxK;
+  float fxA = sin(vFxP.x * 0.9 + sin(vFxP.z * 0.6 + vFxP.y * 0.4) * 2.2); float fxB = sin(vFxP.z * 0.8 + vFxP.y * 0.35 + sin(vFxP.x * 0.5) * 1.7);
+  float fxQ = abs(fxA * fxB); float fxW = 0.05 + fwidth(fxQ); float fxVein = (1.0 - smoothstep(0.0, fxW, fxQ)) * (0.05 / fxW);
+  float fxP = 0.55 + 0.45 * sin(uTime * 1.3 + vFxP.y * 0.7 + vFxP.x * 0.2);
+  totalEmissiveRadiance += uFxCol2 * fxVein * fxDep * fxP * 1.3;
+}`;
+const CRYSTAL_FX = `{
+  vec3 fxV = normalize(vViewPosition); float fxR = 1.0 - clamp(abs(dot(normal, fxV)), 0.0, 1.0);
+  vec3 fxI = 0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + fxR * 2.2 + uTime * 0.35 + vFxP.y * 0.6));
+  float fxC = abs(sin(vFxP.x * 7.0 + vFxP.y * 5.0 + uTime * 1.9 + fxR * 3.0) * sin(vFxP.z * 6.0 - vFxP.y * 4.0 + uTime * 1.3 + fxR * 4.0)); fxC *= fxC; fxC *= fxC;
+  float fxS = max(sin(dot(normal, vec3(12.9, 78.2, 37.7)) + uTime * 2.3), 0.0); fxS *= fxS; fxS *= fxS; fxS *= fxS; fxS *= fxS;
+  totalEmissiveRadiance += (mix(uFxCol, fxI * uFxCol2, 0.6) * (0.3 + 1.6 * fxR * fxR) + uFxCol2 * fxC * 0.9 + vec3(fxS * 1.2)) * uFxK;
+}`;
+function l3Fx(mat, key, body, uTime, col, col2, k) {
+  const u = { uFxCol: { value: new THREE.Color(col) }, uFxCol2: { value: new THREE.Color(col2) }, uFxK: { value: k }, uTime };
+  mat.customProgramCacheKey = () => 'l3fx-' + key;
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFxP;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvFxP = transformed;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vFxP; uniform vec3 uFxCol; uniform vec3 uFxCol2; uniform float uFxK; uniform float uTime;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + body);
+  };
+  return mat;
+}
+function noiseTexture(seed) {
+  const N = 128, rnd = mulberry32(seed), data = new Uint8Array(N * N * 4), oct = [[8, 0.5], [16, 0.28], [32, 0.15], [64, 0.07]];
+  const grids = oct.map(([g]) => { const a = new Float32Array(g * g); for (let i = 0; i < a.length; i++) a[i] = rnd(); return a; });
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let v = 0;
+    for (let k = 0; k < oct.length; k++) {
+      const g = oct[k][0], fx = x / N * g, fy = y / N * g, x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = (x0 + 1) % g, y1 = (y0 + 1) % g, G = grids[k];
+      let tx = fx - x0, ty = fy - y0; tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty);
+      const a = G[y0 * g + x0] + (G[y0 * g + x1] - G[y0 * g + x0]) * tx, b = G[y1 * g + x0] + (G[y1 * g + x1] - G[y1 * g + x0]) * tx; v += (a + (b - a) * ty) * oct[k][1];
+    }
+    const c = Math.max(0, Math.min(255, (v * 255) | 0)), i = (y * N + x) * 4; data[i] = data[i + 1] = data[i + 2] = c; data[i + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.needsUpdate = true; return t;
+}
 const PTS_VS = `attribute float aSize; attribute vec3 aColor; uniform float uScale; varying vec3 vC; varying float vFade;
 void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); float dist = max(0.1, -mv.z);
   gl_PointSize = clamp(aSize * uScale / dist, 1.0, 48.0); vC = aColor; vFade = 1.0 - smoothstep(180.0, 420.0, dist);
   gl_Position = projectionMatrix * mv; }`;
 const PTS_FS = `varying vec3 vC; varying float vFade;
-void main(){ vec2 c = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.0, length(c)); gl_FragColor = vec4(vC * a * a * vFade, 1.0); }`;
+void main(){ vec2 c = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.0, length(c)); gl_FragColor = vec4(vC * a * a * vFade * 1.6, 1.0); }`;
 const WH_FS = `uniform float uTime; uniform float uOpen; varying vec2 vUv;
 float h2(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float n2(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -190,6 +292,7 @@ export default class Level3 {
   constructor(ctx) {
     this.ctx = ctx;
     this.t = 0;
+    this.flashlightScale = 0.7; // open void: keep the flashlight pool from washing out the island tops
     this.objs = []; this.textures = []; this.interactIds = []; this.loops = [];
     this.creatures = []; this.watcher = null; this.createCreature = null;
     this.shards = [false, false, false]; this.shardShown = [true, true, true]; this.shardObjs = [];
@@ -221,10 +324,11 @@ export default class Level3 {
     ctx.audio?.ambience?.('l3');
     try { const m = await import('../creatures/creatures.js'); this.createCreature = m.createCreature || m.default?.createCreature || null; }
     catch (e) { console.warn('[L3] creatures unavailable', e); }
+    if (this._disposed) return; // torn down while the import was in flight
 
     this.glowTex = glowTexture(); this.textures.push(this.glowTex);
     this.panelTex = panelTexture(this.R); this.textures.push(this.panelTex);
-    const steps = ['buildLights', 'buildSky', 'buildStreams', 'buildDebris', 'buildIslands', 'buildGate', 'buildPerihelion', 'buildShards', 'buildPads', 'buildShrines', 'buildRift', 'buildCreatures'];
+    const steps = ['buildLights', 'buildSky', 'buildStreams', 'buildDebris', 'buildIslands', 'buildGate', 'buildPerihelion', 'buildShards', 'buildPads', 'buildShrines', 'buildRift', 'buildCreatures', 'buildAtmos'];
     // fresh fixed-seed stream per step: quality-dependent counts (low/high) in one step must not shift
     // the layout (crate colliders etc.) of later steps between peers with different quality settings
     steps.forEach((s, k) => { this.R = mulberry32(0x5eed3 + (k + 1) * 0x9e37); try { this[s](); } catch (e) { console.error('[L3] ' + s + ' failed', e); } });
@@ -265,8 +369,8 @@ export default class Level3 {
   }
 
   buildLights() {
-    this.add(new THREE.HemisphereLight(0x6b5aa8, 0x0d0716, 0.9));
-    this.add(new THREE.AmbientLight(0x2a1f45, 0.6));
+    this.add(new THREE.HemisphereLight(0x6b5aa8, 0x0d0716, 0.55));
+    this.add(new THREE.AmbientLight(0x2a1f45, 0.3));
     const d = new THREE.DirectionalLight(0xc8b8ff, 0.9); d.position.set(-120, 200, 80); this.add(d);
     const r = new THREE.DirectionalLight(0x3fd6d0, 0.35); r.position.set(150, -60, -120); this.add(r);
   }
@@ -308,6 +412,7 @@ export default class Level3 {
         vertexShader: STREAM_VS, fragmentShader: STREAM_FS, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
       this.streamMats.push(mat);
       this.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 220, d.r, 8, false), mat));
+      (this.streamCurves || (this.streamCurves = [])).push({ curve, r: d.r, mat });
       const pts = curve.getSpacedPoints(255); const tab = new Float32Array(256 * 3); pts.forEach((p, i) => { tab[i * 3] = p.x; tab[i * 3 + 1] = p.y; tab[i * 3 + 2] = p.z; });
       const ca = new THREE.Color(d.a), cb = new THREE.Color(d.b);
       const u0 = new Float32Array(per), sp = new Float32Array(per), jit = new Float32Array(per * 3);
@@ -368,11 +473,13 @@ export default class Level3 {
   buildIslands() {
     const R = this.R;
     this.rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0.04, flatShading: true, emissive: 0x0a0612 });
+    l3Fx(this.rockMat, 'rock', ROCK_FX, this.uTime, 0x6a54ff, 0xa03cff, 0.75);
     for (const [c, d] of [[L.start, 14], [L.plaza, 24], [L.ringIsle, 20], [L.isleA, 16], [L.isleB, 16], [L.isleC, 22]]) this.island(c, d);
     const p1 = this.island(L.p1, 9), p2 = this.island(L.p2, 8);
     this.p1Isle = p1; this.p2Isle = p2;
     // under-island glowing crystals (one draw call)
     const cg = new THREE.OctahedronGeometry(1, 0); const cm = new THREE.MeshStandardMaterial({ color: 0x2a0d4a, emissive: 0x8a4dff, emissiveIntensity: 1.6, roughness: 0.3 });
+    l3Fx(cm, 'crystal', CRYSTAL_FX, this.uTime, 0x8a4dff, 0x9fe8ff, 0.8);
     const N = 70; const cr = new THREE.InstancedMesh(cg, cm, N); const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
     const isl = [L.start, L.plaza, L.ringIsle, L.isleA, L.isleB, L.isleC];
     for (let i = 0; i < N; i++) {
@@ -464,6 +571,7 @@ export default class Level3 {
     const pedMat = new THREE.MeshStandardMaterial({ color: 0x15111c, roughness: 0.8, emissive: 0x10051c });
     this.socketCrystals = []; this.beams = [];
     const crystGeo = new THREE.OctahedronGeometry(0.38, 0); const crystMat = new THREE.MeshStandardMaterial({ color: 0x1a0830, emissive: 0xb07cff, emissiveIntensity: 2.6, roughness: 0.2 });
+    l3Fx(crystMat, 'crystal', CRYSTAL_FX, this.uTime, 0xb07cff, 0xd8f4ff, 0.9);
     const beamMat = new THREE.MeshBasicMaterial({ color: 0xb48cff, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false });
     const ringC = V(0, ringY, ringZ);
     for (const [x, z] of [[-4.5, -10.5], [0, -11.2], [4.5, -10.5]]) {
@@ -526,6 +634,7 @@ export default class Level3 {
     const defs = [V(-75.5, 7.6, -7.5), V(81.5, 1.7, 6), V(31, 27.6, -64.5)];
     const cg = new THREE.OctahedronGeometry(0.42, 0), fg = new THREE.TetrahedronGeometry(0.3, 0);
     const cm = new THREE.MeshStandardMaterial({ color: 0x1a0830, emissive: 0xa45cff, emissiveIntensity: 2.2, metalness: 0.2, roughness: 0.15 });
+    l3Fx(cm, 'crystal', CRYSTAL_FX, this.uTime, 0xa45cff, 0xd8f4ff, 1.0);
     defs.forEach((pos, i) => {
       const g = new THREE.Group(); g.position.copy(pos);
       const c = new THREE.Mesh(cg, cm); c.scale.set(1, 2.1, 1); g.add(c);
@@ -569,6 +678,7 @@ export default class Level3 {
     const pts = [V(-9, 0, 5), V(-70, 6, -2.5), V(63, 0, 7.7), V(35, 26, -58.5)];
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x1a1722, roughness: 0.8 });
     const crystMat = new THREE.MeshStandardMaterial({ color: 0x062a2a, emissive: 0x4ff0d0, emissiveIntensity: 1.8, roughness: 0.2 });
+    l3Fx(crystMat, 'crystal', CRYSTAL_FX, this.uTime, 0x3fe8c8, 0xc8fff4, 0.7);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0x2ad8c0, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
     const beamMat = new THREE.ShaderMaterial({ uniforms: { uTime: this.uTime, uCol: { value: new THREE.Color(0x3fe8c8) } }, vertexShader: UV_VS, fragmentShader: BEAM_FS, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
     this.shrineCrystals = [];
@@ -597,6 +707,42 @@ export default class Level3 {
     this.spawnWraith(V(74, 1.2, 6), [V(58, 1.2, 6), V(80, 1.2, 6), V(72, 1.5, 14), V(60, 1.2, 0)]);
     this.spawnWraith(V(20, 3, -22), [V(14, 2, -8), V(31, 2, -14), V(31, 8, -28), V(14, 6, -30)]);
     try { this.watcher = cc('watcher', this.ctx, { position: V(-34, 40, -175), scale: 1.4 }) || null; } catch (e) { console.warn('[L3] watcher', e); }
+  }
+  // purely visual atmosphere (own RNG, no colliders): void haze, falling motes, stream halos, Gate god rays
+  buildAtmos() {
+    const rnd = mulberry32(0xa7305), low = this.low;
+    // stream halos (share colour/boost uniforms with the core tube)
+    for (const s of this.streamCurves || []) {
+      const u = s.mat.uniforms;
+      const gm = new THREE.ShaderMaterial({ uniforms: { uTime: this.uTime, uColA: u.uColA, uColB: u.uColB, uBoost: u.uBoost }, vertexShader: STREAM_VS, fragmentShader: SGLOW_FS,
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+      this.add(new THREE.Mesh(new THREE.TubeGeometry(s.curve, 110, s.r * 3.4, 8, false), gm));
+    }
+    // void haze sheets beneath the islands: layered parallax mist into the bottomless drop
+    const nt = noiseTexture(0x51ab); this.textures.push(nt);
+    this.hazeCam = new THREE.Vector3(); this.hazes = [];
+    const layers = [[-36, 0x5a22b0, 0.2, 0.0], [-58, 0x3a1890, 0.19, 0.37], [-90, 0x1c2c8a, 0.17, 0.71], [-140, 0x0e4a5a, 0.16, 0.19]];
+    for (let i = 0; i < (low ? 2 : layers.length); i++) {
+      const [y, c, a, sd] = layers[i];
+      const m = new THREE.ShaderMaterial({ uniforms: { uNoise: { value: nt }, uTime: this.uTime, uCol: { value: new THREE.Color(c) }, uA: { value: a }, uCam: { value: this.hazeCam }, uSeed: { value: sd } },
+        vertexShader: HAZE_VS, fragmentShader: HAZE_FS, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), m); p.rotation.x = -Math.PI / 2; p.position.y = y; p.frustumCulled = false; p.renderOrder = -10 - i;
+      this.add(p); this.hazes.push(p);
+    }
+    // slow-falling motes around the camera
+    const NM = low ? 300 : 700, seeds = new Float32Array(NM * 3);
+    for (let i = 0; i < NM * 3; i++) seeds[i] = rnd();
+    const mg = new THREE.BufferGeometry(); mg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(NM * 3), 3)); mg.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 3));
+    this.moteMat = new THREE.ShaderMaterial({ uniforms: { uTime: this.uTime, uCam: { value: new THREE.Vector3() }, uScale: { value: 300 } }, vertexShader: MOTE_VS, fragmentShader: MOTE_FS,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    const motes = new THREE.Points(mg, this.moteMat); motes.frustumCulled = false; this.add(motes);
+    // Gate god rays + bloom glow (billboarded each frame, pushed just behind the ring)
+    if (this.gateGroup) {
+      this.raysMat = new THREE.ShaderMaterial({ uniforms: { uTime: this.uTime, uI: { value: 0.35 }, uOpen: { value: 0 } }, vertexShader: UV_VS, fragmentShader: RAYS_FS,
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+      this.gateRays = new THREE.Mesh(new THREE.PlaneGeometry(96, 96), this.raysMat); this.gateRays.renderOrder = 5; this.gateGroup.add(this.gateRays);
+      this._camQ = new THREE.Quaternion(); this._fwd = new THREE.Vector3();
+    }
   }
   spawnWraith(pos, patrol) {
     let c = null;
@@ -788,7 +934,18 @@ export default class Level3 {
     for (let i = 0; i < (this.shrineCrystals || []).length; i++) { const c = this.shrineCrystals[i]; c.rotation.y += dt; c.position.y = 1.7 + Math.sin(t * 1.2 + i) * 0.1; }
     // gate runes respond to shard count
     const n = this.shardCount();
-    if (this.runeMat) this.runeMat.uniforms.uInt.value = this.gateActive ? 2.4 + Math.sin(t * 5) * 0.6 : 0.3 + n * 0.3;
+    if (cam) {
+      if (this.hazes) { this.hazeCam.copy(cam.position); for (const h of this.hazes) { h.position.x = cam.position.x; h.position.z = cam.position.z; } }
+      if (this.moteMat) { this.moteMat.uniforms.uCam.value.copy(cam.position); this.moteMat.uniforms.uScale.value = (this.ctx.renderer?.domElement?.height || 900) * 0.6; }
+      if (this.gateRays) {
+        cam.getWorldQuaternion(this._camQ); this.gateRays.quaternion.copy(this._camQ);
+        this.gateRays.position.copy(this._fwd.set(0, 0, -1).applyQuaternion(this._camQ)).multiplyScalar(3.5);
+        const op = this.gateActive ? Math.min(1, Math.max(0, (t - this.collapseStart - 1.0) / (WORM_OPEN_AT - 1.0))) : 0;
+        this.raysMat.uniforms.uOpen.value = op;
+        this.raysMat.uniforms.uI.value = this.gateActive ? 1.2 + ck * 0.8 + Math.sin(t * 7) * 0.12 : 0.24 + n * 0.16 + Math.sin(t * 0.9) * 0.04;
+      }
+    }
+    if (this.runeMat) this.runeMat.uniforms.uInt.value = this.gateActive ? 2.4 + Math.sin(t * 5) * 0.6 : 0.5 + n * 0.35;
     if (this.chevGlowMat) this.chevGlowMat.color.setHex(this.gateActive ? 0xe0c8ff : n > 0 ? 0x9a5cff : 0x3a1f66);
     if (this.gateLight) this.gateLight.intensity = this.gateActive ? 40 + 25 * ck + Math.sin(t * 7) * 8 : 6 + n * 4;
     if (this.gateActive) {
@@ -933,6 +1090,7 @@ export default class Level3 {
   }
 
   dispose() {
+    this._disposed = true;
     const ctx = this.ctx;
     for (const c of this.creatures) { try { c?.dispose?.(); } catch (e) { /* */ } }
     try { this.watcher?.dispose?.(); } catch (e) { /* */ }

@@ -10,8 +10,8 @@ Static site served from repo root; deployed to Vercel as static files.
 - Call other modules defensively: `ctx.audio?.play?.('x')`. Never crash the frame loop: wrap risky per-frame code in try/catch where sensible.
 - Layout/procedural generation that must match across peers uses **`ctx.rng()` only** (seeded, same on all peers). `Math.random` is fine for purely visual noise (particles, flicker).
 - Perf budget: 60fps on an M1 Air / mid laptop. InstancedMesh for repeated props, < ~250 draw calls, no per-frame allocations in hot loops, max 1 shadow-casting light (the local flashlight, owned by player.js). Level build < 3s.
-- Syntax check every file you write (no node on this machine):
-  `/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc -e 'checkModuleSyntax(readFile("ABS_PATH"))'` (silent = OK).
+- Syntax check: `tools/check.sh` (all modules, uses macOS JavaScriptCore) or `~/.local/node/bin/node --check <file>` (Node is installed in `~/.local/node` since 2026-11-15).
+- Screenshots without a browser: `tools/shot.sh "level=1&nocut&test&nohud&pose=x,z,yaw,pitch" out.png` (headless Chrome, needs the local server on :8642).
 
 ## File ownership
 | File | Owner |

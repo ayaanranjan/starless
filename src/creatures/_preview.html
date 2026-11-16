@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Creature preview</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}#err{position:fixed;top:4px;left:4px;color:#f66;font:12px monospace;white-space:pre-wrap;z-index:9}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head><body><div id="err"></div>
+<script type="module">
+// Dev-only creature lineup (graphics pass). ?set=a (stalker/crawler/mimic) | b (wraith/watcher) ; &flash=0 to turn the beam off
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { createCreature } from './creatures.js';
+const E = document.getElementById('err');
+window.addEventListener('error', (e) => { E.textContent += e.message + '\n'; });
+const q = new URLSearchParams(location.search), set = q.get('set') || 'a', flash = q.get('flash') !== '0';
+const R = new THREE.WebGLRenderer({ antialias: false });
+R.setSize(innerWidth, innerHeight); R.shadowMap.enabled = true; R.toneMapping = THREE.ACESFilmicToneMapping; R.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(R.domElement);
+const origErr = console.error; console.error = (...a) => { E.textContent += a.join(' ').slice(0, 300) + '\n'; origErr(...a); };
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x020304); scene.fog = new THREE.FogExp2(0x020304, 0.035);
+const cam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 2000); cam.position.set(0, 1.62, 0);
+scene.add(cam);
+scene.add(new THREE.HemisphereLight(0x223040, 0x050403, 0.25));
+const spot = new THREE.SpotLight(0xfff1dc, flash ? 60 : 0, 30, 0.42, 0.45, 1.6); spot.castShadow = true; spot.shadow.mapSize.set(1024, 1024);
+spot.position.set(0.25, -0.2, 0); cam.add(spot); cam.add(spot.target); spot.target.position.set(0, -0.15, -5);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.85 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+const player = { id: 'me', position: new THREE.Vector3(0, 0, 0), yaw: 0, pitch: -0.1, flashlight: flash, battery: 100, health: 100 };
+const ctx = { scene, isHost: false, players: new Map([['me', player]]), localId: 'me', getLocalPlayer: () => player, audio: null, world: null, time: 0, camera: cam };
+const list = set === 'a'
+  ? [['stalker', [-1.9, 0, -4.2], 3.6], ['crawler', [0.3, 0, -3.6], 3.14], ['mimic', [2.2, 0, -4.4], 2.8]]
+  : set === 'b' ? [['wraith', [-0.9, 0, -3.6], 3.3], ['stalker', [0.9, 0, -3.2], 2.9]]
+  : [['watcher', [0, 30, -110], 0]];
+const cs = [];
+for (const [type, p, yaw] of list) {
+  try { const c = createCreature(type, ctx, { position: p, yaw, lookAt: [0, 1.6, 0] }); c.yaw = yaw; c.netYaw = yaw; cs.push(c); }
+  catch (e) { E.textContent += type + ': ' + e.message + '\n'; }
+}
+if (set === 'c') { cam.lookAt(0, 30, -110); scene.fog = null; }
+else cam.rotation.x = -0.12;
+const comp = new EffectComposer(R); comp.addPass(new RenderPass(scene, cam));
+comp.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.5, 0.82)); comp.addPass(new OutputPass());
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; ctx.time += dt;
+  for (const c of cs) { try { c.update(dt); } catch (e) { E.textContent += c.type + ' upd: ' + e.message + '\n'; } }
+  comp.render(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script></body></html>

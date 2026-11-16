@@ -1,15 +1,34 @@
 // Stalker (Ch.I): 2.7m eyeless, emaciated, digitigrade, long-armed. Hunts by sound, recoils from light.
 import * as THREE from 'three';
-import { WalkerAI, acquireShared, limbGeo, mesh, group, damp, clamp, rand, localPlayer, yawTo, wrapAngle } from './common.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { WalkerAI, acquireShared, limbGeo, mesh, group, damp, clamp, rand, localPlayer, yawTo, wrapAngle, wetSkin, eyeShine, clawMat } from './common.js';
 
 function buildShared() {
-  const skin = new THREE.MeshStandardMaterial({ color: 0x1a1714, roughness: 0.35, metalness: 0.08 });
-  const glow = new THREE.MeshStandardMaterial({ color: 0x0a1612, emissive: 0x47ffd0, emissiveIntensity: 1.2, roughness: 0.4 });
-  const maw = new THREE.MeshBasicMaterial({ color: 0x1c0303 });
+  // wet, translucent-looking grey-brown hide with cold fresnel rim; glowing bioluminescent nodules flare under the beam
+  const skin = wetSkin({ color: 0x170d0c, roughness: 0.55, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.2,
+    sheen: 0.25, sheenColor: new THREE.Color(0x3a1418), rim: 0x9cc8d4, rimStrength: 0.5, rimPower: 3.4, scale: 14, mottle: 0.5 });
+  const glow = eyeShine(new THREE.MeshStandardMaterial({ color: 0x0a1612, emissive: 0x47ffd0, emissiveIntensity: 1.2, roughness: 0.25 }), 2.5);
+  const maw = new THREE.MeshBasicMaterial({ color: 0x3a0505 });
+  const claw = clawMat(0x0a0807);
+  // merged ribcage + spine ridge (one draw call): ribs arc around the front of the chest, vertebrae down the back
+  const parts = [];
+  for (let i = 0; i < 4; i++) {
+    const y = -0.13 + i * 0.085, f = Math.sqrt(1 - (y / 0.312) ** 2);
+    const g = new THREE.TorusGeometry(1, 0.055, 4, 14, Math.PI);
+    g.rotateX(-Math.PI / 2); g.scale(0.252 * f * 1.07, 0.26, 0.173 * f * 1.16); g.rotateX(-0.22); g.translate(0, y, 0);
+    parts.push(g);
+  }
+  for (let i = 0; i < 7; i++) {
+    const y = -0.24 + i * 0.075, f = Math.sqrt(Math.max(0.05, 1 - (y / 0.312) ** 2));
+    const g = new THREE.SphereGeometry(0.03 - i * 0.0015, 6, 4); g.scale(1.3, 0.8, 1); g.translate(0, y, 0.173 * f + 0.004);
+    parts.push(g);
+  }
+  const ribcage = mergeGeometries(parts.map((g) => g.toNonIndexed()));
+  parts.forEach((g) => g.dispose());
   const chest = new THREE.SphereGeometry(0.24, 12, 10);
   const abdomen = new THREE.CylinderGeometry(0.11, 0.14, 0.52, 8, 3); abdomen.translate(0, 0.26, 0);
   return {
-    skin, glow, maw, chest, abdomen,
+    skin, glow, maw, claw, ribcage, chest, abdomen,
     pelvis: new THREE.SphereGeometry(0.16, 10, 8),
     neck: (() => { const g = new THREE.CylinderGeometry(0.045, 0.06, 0.22, 7); g.translate(0, 0.11, 0); return g; })(),
     skull: new THREE.SphereGeometry(0.13, 12, 10),
@@ -44,15 +63,16 @@ export class Stalker extends WalkerAI {
     const hips = this.hips = group(root, 0, 1.34, 0);
     mesh(S.pelvis, S.skin, hips).scale.set(1.1, 0.8, 0.8);
     const torso = this.torso = group(hips);
-    mesh(S.abdomen, S.skin, torso).scale.set(1, 1, 0.75);
+    const abdM = mesh(S.abdomen, S.skin, torso); abdM.scale.set(1, 1, 0.75); abdM.castShadow = true;
     const chestG = this.chestG = group(torso, 0, 0.5, 0);
-    this.chestM = mesh(S.chest, S.skin, chestG, 0, 0.26, 0); this.chestM.scale.set(1.05, 1.3, 0.72);
+    this.chestM = mesh(S.chest, S.skin, chestG, 0, 0.26, 0); this.chestM.scale.set(1.05, 1.3, 0.72); this.chestM.castShadow = true;
+    mesh(S.ribcage, S.skin, chestG, 0, 0.26, 0);
     for (let i = 0; i < 4; i++) mesh(S.nodule, S.glow, chestG, (i % 2 ? 0.05 : -0.05), 0.08 + i * 0.13, 0.17 - i * 0.004);
     mesh(S.nodule, S.glow, torso, 0.03, 0.22, 0.1); mesh(S.nodule, S.glow, torso, -0.04, 0.38, 0.1);
     const neck = this.neck = group(chestG, 0, 0.5, -0.04);
     mesh(S.neck, S.skin, neck).rotation.x = -0.25;
     const head = this.head = group(neck, 0, 0.21, -0.04);
-    const skull = mesh(S.skull, S.skin, head, 0, 0.08, 0); skull.scale.set(0.82, 1.3, 1.0);
+    const skull = mesh(S.skull, S.skin, head, 0, 0.08, 0); skull.scale.set(0.82, 1.3, 1.0); skull.castShadow = true;
     this.slit = mesh(S.slit, S.maw, head, 0, 0.04, -0.118); this.slit.scale.x = 0.3;
     this.flapL = mesh(S.flap, S.skin, head, -0.022, 0.04, -0.11);
     this.flapR = mesh(S.flap, S.skin, head, 0.022, 0.04, -0.11);
@@ -62,14 +82,14 @@ export class Stalker extends WalkerAI {
       const el = group(sh, 0, -0.75, 0); mesh(S.fore, S.skin, el);
       if (side > 0) mesh(S.nodule, S.glow, el, 0.03, -0.3, 0.02);
       const wr = group(el, 0, -0.72, 0); mesh(S.hand, S.skin, wr);
-      const fingers = [-1, 0, 1].map((f) => { const fg = group(wr, f * 0.018, -0.16, 0); mesh(S.finger, S.skin, fg); fg.rotation.z = f * 0.12; return fg; });
+      const fingers = [-1, 0, 1].map((f) => { const fg = group(wr, f * 0.018, -0.16, 0); mesh(S.finger, S.claw, fg); fg.rotation.z = f * 0.12; return fg; });
       return { sh, el, wr, fingers, side };
     });
     this.legs = [-1, 1].map((side) => {
       const hip = group(hips, 0.15 * side, 0, 0); mesh(S.thigh, S.skin, hip);
       const kn = group(hip, 0, -0.55, 0); mesh(S.shin, S.skin, kn);
       const an = group(kn, 0, -0.6, 0); mesh(S.meta, S.skin, an);
-      const to = group(an, 0, -0.46, 0); mesh(S.toe, S.skin, to);
+      const to = group(an, 0, -0.46, 0); mesh(S.toe, S.claw, to);
       return { hip, kn, an, to, side };
     });
   }

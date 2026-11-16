@@ -1,6 +1,6 @@
 // Mimic (Ch.II): featureless astronaut silhouette. Stands still, watches, dissolves when lit/approached, rushes when you look away.
 import * as THREE from 'three';
-import { CreatureBase, acquireShared, mesh, group, damp, dampAngle, clamp, rand, fogShaderMaterial, GLSL_NOISE, validTarget, isLit, lookAngle, los, playerEye, yawTo, wrapAngle } from './common.js';
+import { SKIN_U, CreatureBase, acquireShared, mesh, group, damp, dampAngle, clamp, rand, fogShaderMaterial, GLSL_NOISE, validTarget, isLit, lookAngle, los, playerEye, yawTo, wrapAngle } from './common.js';
 
 function buildShared() {
   const cap = (r, l) => new THREE.CapsuleGeometry(r, l, 3, 8);
@@ -9,26 +9,40 @@ function buildShared() {
     limb: cap(0.075, 0.3), leg: cap(0.09, 0.34), boot: new THREE.BoxGeometry(0.16, 0.12, 0.28) };
 }
 const VERT = `
-varying vec3 vLocal; varying vec3 vN; varying vec3 vV;
+varying vec3 vLocal; varying vec3 vN; varying vec3 vV; varying vec3 vVP;
 void main(){
   vLocal = position;
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vN = normalize(mat3(modelMatrix) * normal);
   vV = cameraPosition - wp.xyz;
   vec4 mvPosition = viewMatrix * wp;
+  vVP = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 const FRAG = `
-uniform float uTime; uniform float uDissolve; uniform vec3 uEdge;
-varying vec3 vLocal; varying vec3 vN; varying vec3 vV;
+uniform float uTime; uniform float uDissolve; uniform vec3 uEdge; uniform float uFlash;
+varying vec3 vLocal; varying vec3 vN; varying vec3 vV; varying vec3 vVP;
 ${GLSL_NOISE}
 void main(){
   float n = n3(vLocal * 9.0 + vec3(0.0, uTime * 0.8, 0.0)) * 0.65 + n3(vLocal * 23.0 - uTime) * 0.35;
   if (n < uDissolve) discard;
-  float edge = (1.0 - smoothstep(0.0, 0.07, n - uDissolve)) * step(0.01, uDissolve);
-  float rim = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.0);
-  vec3 col = vec3(0.008, 0.009, 0.012) + rim * vec3(0.03, 0.04, 0.05) + edge * uEdge;
+  float on = step(0.01, uDissolve);
+  float dd = n - uDissolve;
+  float edge = (1.0 - smoothstep(0.0, 0.09, dd)) * on;
+  float hot = (1.0 - smoothstep(0.0, 0.025, dd)) * on;
+  vec3 N = normalize(vN); vec3 V = normalize(vV);
+  float ndv = abs(dot(N, V));
+  float rim = pow(1.0 - ndv, 3.0);
+  // fake flashlight (light at the eye): oily diffuse + tight wet highlight, so the beam reveals a slick, wrong surface
+  float dist = length(vVP); vec3 vdir = vVP / max(dist, 1e-4);
+  float fl = uFlash * smoothstep(0.86, 0.985, vdir.z) / (1.0 + dist * dist * 0.012);
+  float vein = 1.0 - smoothstep(0.0, 0.03, abs(n - 0.52));
+  float pulse = 0.55 + 0.45 * sin(uTime * 2.3 + vLocal.y * 6.0);
+  vec3 col = vec3(0.010, 0.010, 0.013) * (0.7 + 0.6 * n);
+  col += fl * (vec3(0.045, 0.043, 0.048) * ndv + vec3(0.8, 0.88, 0.95) * pow(ndv, 40.0) * (0.4 + 0.6 * n) + vec3(0.10, 0.17, 0.2) * rim);
+  col += rim * vec3(0.03, 0.04, 0.05) + vein * pulse * vec3(0.025, 0.07, 0.09) * (0.35 + 3.0 * on);
+  col += edge * uEdge * 1.5 + hot * vec3(2.6, 2.45, 2.2);
   gl_FragColor = vec4(col, 1.0);
   #include <fog_fragment>
 }`;
@@ -42,14 +56,15 @@ export class Mimic extends CreatureBase {
     this.sprint = opts.speed ?? 7; this.dmg = opts.damage ?? 20;
     const S = this.S = acquireShared('mimic', buildShared);
     this.mat = fogShaderMaterial({ uniforms: { uTime: { value: 0 }, uDissolve: { value: 0 }, uEdge: { value: new THREE.Color(0x9fd8ff).multiplyScalar(1.6) } }, vertex: VERT, fragment: FRAG });
+    this.mat.uniforms.uFlash = SKIN_U.uFlash;
     this.visorMat = new THREE.MeshBasicMaterial({ color: 0x5f93a6, transparent: true, opacity: 0.3, depthWrite: false });
     const m = this.mat;
     const hips = this.hips = group(this.object, 0, 0.98, 0);
     const torso = this.torso = group(hips);
-    mesh(S.torso, m, torso, 0, 0.36, 0).scale.set(1, 1, 0.78);
+    this.torsoM = mesh(S.torso, m, torso, 0, 0.36, 0); this.torsoM.scale.set(1, 1, 0.78);
     mesh(S.pack, m, torso, 0, 0.42, 0.22);
     const head = this.head = group(torso, 0, 0.78, 0);
-    mesh(S.helmet, m, head, 0, 0.1, 0);
+    this.helmM = mesh(S.helmet, m, head, 0, 0.1, 0);
     this.visor = mesh(S.visor, this.visorMat, head, 0, 0.1, 0);
     this.arms = [-1, 1].map((side) => {
       const sh = group(torso, 0.29 * side, 0.6, 0); mesh(S.limb, m, sh, 0, -0.2, 0);
@@ -151,6 +166,7 @@ export class Mimic extends CreatureBase {
     else this.dissolve = Math.max(0, this.dissolve - dt * 0.6);
     const flick = this.dissolve > 0 && this.dissolve < 1 ? (Math.random() < 0.3 ? 0.25 : 0) : 0;
     this.mat.uniforms.uDissolve.value = clamp(this.dissolve + flick, 0, 1);
+    this.torsoM.castShadow = this.helmM.castShadow = this.mat.uniforms.uDissolve.value < 0.02; // solid depth shadow only while whole
     this.object.visible = this.dissolve < 0.995;
     this.visorMat.opacity = (0.22 + 0.1 * Math.sin(t * 2.3) + (Math.random() < 0.03 ? 0.25 : 0)) * (1 - this.dissolve);
     // head tracks nearest player slowly; an occasional too-fast snap

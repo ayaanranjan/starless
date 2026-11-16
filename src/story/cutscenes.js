@@ -12,7 +12,11 @@ const PATCH = new THREE.Vector3(0.22, 0.14, -1).normalize();
 
 function crew(ctx) {
   const list = [];
-  try { for (const p of ctx.players?.values?.() || []) if (p?.callsign && !list.includes(p.callsign)) list.push(p.callsign); } catch (e) { /* ignore */ }
+  // Slot order (not Map insertion order, which puts the local player first) so every peer attributes lines identically.
+  try {
+    const ps = Array.from(ctx.players?.values?.() || []).sort((a, b) => (+a?.slot || 0) - (+b?.slot || 0));
+    for (const p of ps) if (p?.callsign && !list.includes(p.callsign)) list.push(p.callsign);
+  } catch (e) { /* ignore */ }
   for (const c of CONFIG.callsigns || ['VEGA', 'ORION', 'LYRA', 'ATLAS']) if (!list.includes(c)) list.push(c);
   return list;
 }
@@ -24,6 +28,7 @@ function disposeTree(root) {
     const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
     for (const m of ms) { mats.add(m); for (const k in m) { const v = m[k]; if (v && v.isTexture) texs.add(v); } if (m.uniforms) for (const k in m.uniforms) { const v = m.uniforms[k]?.value; if (v && v.isTexture) texs.add(v); } }
     if (o.isLight && o.dispose) o.dispose();
+    if (o.isInstancedMesh && o.dispose) o.dispose(); // frees the instanceMatrix GPU buffer
   });
   geos.forEach((g) => g.dispose()); mats.forEach((m) => m.dispose()); texs.forEach((t) => t.dispose());
 }
@@ -48,21 +53,30 @@ function makeOverlay() {
   };
 }
 
+let activeRun = null;
+
 function createRun(ctx, name) {
   const scene = ctx.scene, camera = ctx.camera;
   const root = new THREE.Group(); root.name = 'cutscene-' + name;
   const saved = { bg: scene?.background ?? null, fog: scene?.fog ?? null, fov: 72, near: camera?.near ?? 0.05, far: camera?.far ?? 1000,
     parent: null, pos: camera?.position.clone(), quat: camera?.quaternion.clone(), up: camera?.up.clone(), hidden: [], cinematic: ctx.cinematic };
   if (camera && camera.parent && camera.parent !== scene) { saved.parent = camera.parent; scene?.add(camera); }
-  if (scene) { for (const ch of scene.children) if (ch.visible) { ch.visible = false; saved.hidden.push(ch); } scene.add(root); }
+  // Never hide the camera itself: the player's flashlight rig is parented to it and must not stay hidden if a level loads.
+  if (scene) { for (const ch of scene.children) if (ch.visible && ch !== camera) { ch.visible = false; saved.hidden.push(ch); } scene.add(root); }
   ctx.cinematic = true;
   const overlay = makeOverlay();
-  const pending = new Set(), fns = new Set(), loops = [];
-  let done = false, cancelled = false, clock = 0, shotFn = null, shotT = 0, resolveOuter;
+  const pending = new Set(), fns = new Set(), loops = [], sounds = [];
+  let done = false, cancelled = false, external = false, clock = 0, shotFn = null, shotT = 0, resolveOuter;
   const promise = new Promise((r) => { resolveOuter = r; });
+  // main.js moved on without us (menu / level load tore the scene down, or the game state changed):
+  // abort at once and leave the new owner's scene, camera and UI alone.
+  const startState = ctx.gameState;
+  const superseded = () => (scene && root.parent !== scene) || (typeof startState === 'string' && ctx.gameState !== startState);
+  const watchdog = setInterval(() => { try { if (!done && superseded()) { external = true; run.finish(); } } catch (e) { /* ignore */ } }, 200);
 
   const tick = (dt) => {
     if (done) return;
+    if (superseded()) { external = true; run.finish(); return; }
     dt = Math.min(Math.max(dt || 0.016, 0), 0.1); clock += dt; shotT += dt;
     for (const f of fns) { try { f(dt, clock); } catch (e) { console.warn('[cutscene]', e); fns.delete(f); } }
     if (shotFn && camera) { try { shotFn(shotT, dt); } catch (e) { console.warn('[cutscene shot]', e); shotFn = null; } }
@@ -88,15 +102,18 @@ function createRun(ctx, name) {
     shot(fn) { shotFn = fn; shotT = 0; if (fn && camera) { try { fn(0, 0); } catch (e) { /* ignore */ } } },
     fov(f) { if (camera) { camera.fov = f; camera.updateProjectionMatrix(); } },
     space(far = 30000) { if (scene) { scene.background = new THREE.Color(0x000000); scene.fog = null; } if (camera) { camera.near = 0.5; camera.far = far; camera.updateProjectionMatrix(); } },
-    sfx(n, o) { try { ctx.audio?.play?.(n, o); } catch (e) { /* ignore */ } },
-    loop(n, o) { try { const h = ctx.audio?.loop?.(n, o); if (h) loops.push(h); return h; } catch (e) { return null; } },
+    sfx(n, o) {
+      if (cancelled) return;
+      try { const h = ctx.audio?.play?.(n, o); if (h && h.stop) { sounds.push(h); if (sounds.length > 48) sounds.shift(); } } catch (e) { /* ignore */ }
+    },
+    loop(n, o) { if (cancelled) return null; try { const h = ctx.audio?.loop?.(n, o); if (h) loops.push(h); return h; } catch (e) { return null; } },
     shake(i, d) { try { ctx.fx?.shake?.(i, d); } catch (e) { /* ignore */ } },
     flash(c, i, d) { try { ctx.fx?.flash?.(c, i, d); } catch (e) { /* ignore */ } },
     glitch(a, d) { try { ctx.fx?.pulseGlitch?.(a, d); } catch (e) { /* ignore */ } },
     line(who, text, secs, radio = true) {
       if (cancelled) return;
       try { ctx.ui?.subtitle?.(who, text, secs); } catch (e) { /* ignore */ }
-      if (radio) { this.sfx('radio', { volume: 0.35 }); try { ctx.audio?.speak?.(Math.max(0.6, secs - 0.8)); } catch (e) { /* ignore */ } }
+      if (radio) { this.sfx('radio', { volume: 0.35 }); try { const h = ctx.audio?.speak?.(Math.max(0.6, secs - 0.8)); if (h && h.stop) sounds.push(h); } catch (e) { /* ignore */ } }
     },
     async say(who, text, secs, radio = true) { if (cancelled) throw CANCEL; this.line(who, text, secs, radio); await this.wait(secs + 0.2); },
     async type(text, cps = 16) {
@@ -106,24 +123,36 @@ function createRun(ctx, name) {
         await this.wait(1 / cps);
       }
     },
+    get done() { return done; },
     finish() {
       if (done) return; done = true; cancelled = true;
-      for (const e of pending) { clearTimeout(e.id); try { e.rej(CANCEL); } catch (er) { /* ignore */ } }
-      pending.clear(); fns.clear(); shotFn = null;
-      try { removeUpdate?.(); } catch (e) { /* ignore */ }
-      for (const h of loops) { try { h.stop?.(0.4); } catch (e) { /* ignore */ } }
-      try { scene?.remove(root); disposeTree(root); } catch (e) { console.warn('[cutscene] dispose', e); }
-      if (scene) { scene.background = saved.bg; scene.fog = saved.fog; for (const o of saved.hidden) if (o.parent === scene || o === camera) o.visible = true; }
-      if (camera) {
-        if (saved.parent) saved.parent.add(camera);
-        if (saved.pos) camera.position.copy(saved.pos); if (saved.quat) camera.quaternion.copy(saved.quat); if (saved.up) camera.up.copy(saved.up);
-        camera.fov = 72; camera.near = saved.near; camera.far = saved.far; camera.updateProjectionMatrix();
-      }
-      overlay.remove();
-      ctx.cinematic = false;
-      try { ctx.ui?.letterbox?.(false); ctx.ui?.fade?.(false, 0.6); } catch (e) { /* ignore */ }
-      try { ctx.fx?.setGlitch?.(0); } catch (e) { /* ignore */ }
-      resolveOuter();
+      if (activeRun === run) activeRun = null;
+      try {
+        clearInterval(watchdog);
+        for (const e of pending) { clearTimeout(e.id); try { e.rej(CANCEL); } catch (er) { /* ignore */ } }
+        pending.clear(); fns.clear(); shotFn = null;
+        try { removeUpdate?.(); } catch (e) { /* ignore */ }
+        for (const h of loops) { try { h?.stop?.(0.4); } catch (e) { /* ignore */ } }
+        for (const h of sounds) { try { h?.stop?.(0.25); } catch (e) { /* ignore */ } }
+        loops.length = 0; sounds.length = 0;
+        try { scene?.remove(root); disposeTree(root); } catch (e) { console.warn('[cutscene] dispose', e); }
+        if (scene) for (const o of saved.hidden) if (o.parent === scene) o.visible = true;
+        if (!external) {
+          if (scene) { scene.background = saved.bg; scene.fog = saved.fog; }
+          if (camera) {
+            if (saved.parent) saved.parent.add(camera);
+            if (saved.pos) camera.position.copy(saved.pos); if (saved.quat) camera.quaternion.copy(saved.quat); if (saved.up) camera.up.copy(saved.up);
+            camera.fov = 72; camera.near = saved.near; camera.far = saved.far; camera.updateProjectionMatrix();
+          }
+        }
+        try { overlay.remove(); } catch (e) { /* ignore */ }
+        ctx.cinematic = false;
+        if (!external) {
+          try { ctx.ui?.letterbox?.(false); ctx.ui?.fade?.(false, 0.6); } catch (e) { /* ignore */ }
+          try { ctx.fx?.setGlitch?.(0); } catch (e) { /* ignore */ }
+        }
+      } catch (e) { console.warn('[cutscene] finish', e); }
+      finally { resolveOuter(); }
     },
   };
   return run;
@@ -182,13 +211,14 @@ async function intro(run) {
   // Shot B — over the shoulder toward the dying patch
   run.fov(52);
   run.shot((lt) => { camera.position.copy(S).add(tmp.set(6, 7, 78 - lt * 1.6)); look.copy(S).addScaledVector(PATCH, 400); camera.lookAt(look); });
-  run.on((dt) => { stars.dark = Math.min(0.38, stars.dark + dt * 0.03); });
+  const slow = run.on((dt) => { stars.dark = Math.min(0.38, stars.dark + dt * 0.03); });
   await run.say(C1, 'Then something out there knows we are listening.', 3.6);
   await run.say('CONTROL', 'Hold standoff distance. Observe, record, come home. That is the job.', 4.4);
 
   // Shot C — telephoto on the patch, stars dying faster
   run.fov(24);
   run.shot((lt) => { camera.position.copy(S).add(tmp.set(-4, 3.2, 26)); look.copy(S).addScaledVector(PATCH, 1000); look.y += Math.sin(lt * 0.7) * 3; camera.lookAt(look); });
+  slow(); // otherwise it clamps dark back to 0.38 every frame and the stars never die faster
   const fast = run.on((dt) => { stars.dark = Math.min(1.25, stars.dark + dt * 0.11); });
   run.sfx('static', { volume: 0.25 });
   await run.say(C2, 'They are going out faster. Hale, are you seeing this?', 3.6);
@@ -498,16 +528,27 @@ const TIMELINES = { intro, l1_end: l1End, l2_end: l2End, ending };
 
 export function playCutscene(name, ctx) {
   const tl = TIMELINES[name];
+  // Never let two runs fight over the scene/camera: end a stale one first.
+  if (activeRun) { try { activeRun.finish(); } catch (e) { /* ignore */ } activeRun = null; }
+  if (!tl) { console.warn('[cutscene] unknown cutscene', name); ctx.cinematic = false; return { promise: Promise.resolve(), skip() {} }; }
   let run;
   try { run = createRun(ctx, name); } catch (e) {
     console.warn('[cutscene] setup failed', e); ctx.cinematic = false;
     return { promise: Promise.resolve(), skip() {} };
   }
+  activeRun = run;
   (async () => {
     try { if (tl) await tl(run); } catch (e) { if (e !== CANCEL) console.warn('[cutscene]', name, e); }
     finally { run.finish(); }
   })();
-  return { promise: run.promise, skip() { try { ctx.ui?.subtitle?.('', '', 0); } catch (e) { /* ignore */ } run.finish(); } };
+  return {
+    promise: run.promise,
+    skip() {
+      if (run.done) return;
+      try { ctx.ui?.subtitle?.('', '', 0); } catch (e) { /* ignore */ }
+      run.finish();
+    },
+  };
 }
 
 // ============================================================ MENU BACKDROP (cheap, runs forever)
@@ -527,10 +568,11 @@ export function buildMenuBackdrop(ctx) {
   const flashTex = glowTexture('rgba(255,255,255,1)', 'rgba(170,220,255,0.4)');
   const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, color: 0xbfe6ff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
   flash.scale.setScalar(300); root.add(flash);
-  let t = 0, nextPulse = 4, pulse = 0, nextFlash = 9, fl = 0;
+  let t = 0, nextPulse = 4, pulse = 0, nextFlash = 9, fl = 0, disposed = false;
   const look = new THREE.Vector3(), tv = new THREE.Vector3();
   return {
     update(dt) {
+      if (disposed) return; // never drive the camera after dispose (a level may own it by then)
       try {
         dt = Math.min(dt || 0.016, 0.1); t += dt;
         const a = t * 0.012;
@@ -547,6 +589,8 @@ export function buildMenuBackdrop(ctx) {
       } catch (e) { /* never break the menu */ }
     },
     dispose() {
+      if (disposed) return; // a second call must not stomp a level's background/fog/camera
+      disposed = true;
       try { scene?.remove(root); disposeTree(root); } catch (e) { /* ignore */ }
       if (scene) { scene.background = saved.bg; scene.fog = saved.fog; }
       if (camera) { camera.fov = 72; if (saved.near) camera.near = saved.near; if (saved.far) camera.far = saved.far; camera.updateProjectionMatrix(); }

@@ -1,16 +1,20 @@
 // STARLESS — renderer + post-processing (ENGINE)
-// RenderPass -> UnrealBloomPass (high only) -> HorrorPass -> OutputPass (tone mapping + sRGB)
+// RenderPass -> UnrealBloomPass (high only) -> HorrorPass -> OutputPass (tone mapping + sRGB) -> SMAA (high only)
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 
 const DEFAULTS = {
   vignette: 0.45, grain: 0.35, chroma: 0.15, glitch: 0, damage: 0,
   saturation: 1, exposure: 1, tint: [1, 1, 1], bloomStrength: 0.8,
+  contrast: 1.07, split: 0.85, halation: 0.6, distort: 0.045,
 };
+// bloom: only true HDR emissives (> ~1.0 linear) glow; fog / sky / lit terrain stay crisp
+const BLOOM_RADIUS = 0.62, BLOOM_THRESHOLD = 0.92;
 
 const HorrorShader = {
   name: 'HorrorPass',
@@ -26,6 +30,10 @@ const HorrorShader = {
     uSaturation: { value: 1 },
     uExposure: { value: 1 },
     uTint: { value: new THREE.Vector3(1, 1, 1) },
+    uContrast: { value: DEFAULTS.contrast },
+    uSplit: { value: DEFAULTS.split },
+    uHalation: { value: DEFAULTS.halation },
+    uDistort: { value: DEFAULTS.distort },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -45,15 +53,25 @@ const HorrorShader = {
     uniform float uSaturation;
     uniform float uExposure;
     uniform vec3 uTint;
+    uniform float uContrast;
+    uniform float uSplit;
+    uniform float uHalation;
+    uniform float uDistort;
     varying vec2 vUv;
 
     float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
     float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 
     void main() {
-      vec2 uv = vUv;
       float t = uTime;
       float g = clamp(uGlitch, 0.0, 1.0);
+      float aspect = uResolution.x / max(uResolution.y, 1.0);
+
+      // ---- very gentle barrel distortion (corners stay anchored, centre slightly magnified)
+      vec2 dc0 = vUv - 0.5;
+      vec2 dcA = dc0 * vec2(aspect, 1.0);
+      float rMax = 0.25 * (aspect * aspect + 1.0);
+      vec2 uv = 0.5 + dc0 * (1.0 + uDistort * dot(dcA, dcA)) / (1.0 + uDistort * rMax);
 
       // ---- glitch: horizontal slice displacement + block tears
       if (g > 0.001) {
@@ -68,8 +86,8 @@ const HorrorShader = {
       }
 
       // ---- radial chromatic aberration (+ glitch RGB split)
-      vec2 dc = vUv - 0.5;
-      float d = length(dc);
+      vec2 dc = uv - 0.5;
+      float d = length(dc0);
       vec2 caOff = dc * (uChroma * 0.03 * d);
       caOff.x += g * 0.014 * (hash11(floor(t * 30.0)) - 0.25);
       vec3 col;
@@ -77,11 +95,35 @@ const HorrorShader = {
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - caOff).b;
 
+      // ---- halation: jittered ring taps of HDR highlights -> warm red film glow around lights
+      if (uHalation > 0.001) {
+        float j = hash12(gl_FragCoord.xy + fract(t) * 91.0) * 6.2832;
+        vec3 h = vec3(0.0);
+        float cL = max(max(col.r, col.g), col.b);
+        float thr = max(cL, 0.85);
+        for (int i = 0; i < 6; i++) {
+          float a = j + float(i) * 1.0472;
+          float rr = 0.006 + 0.014 * fract(j * 0.37 + float(i) * 0.618);
+          vec3 sm = texture2D(tDiffuse, uv + vec2(cos(a) / aspect, sin(a)) * rr).rgb;
+          h += max(sm - thr, 0.0);
+        }
+        col += min(h, vec3(24.0)) * (uHalation / 6.0) * vec3(0.55, 0.16, 0.06);
+      }
+
       // ---- grading (linear HDR)
       col *= uExposure;
+      // filmic contrast (log space, pivot ~0.12): full strength below the pivot so shadows sink,
+      // only a quarter above it so bright skies / lit areas don't wash out before ACES
+      vec3 dlc = log2(max(col, vec3(1e-6))) + 3.06;
+      vec3 kc = mix(vec3(uContrast), vec3(1.0 + (uContrast - 1.0) * 0.25), step(0.0, dlc));
+      col = exp2(dlc * kc - 3.06);
       float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
       col = max(mix(vec3(lum), col, uSaturation), 0.0);
       col *= uTint;
+      // split-tone: cool teal shadows, warm amber highlights; whisper of blue in the blacks
+      float sl = smoothstep(0.004, 0.45, dot(col, vec3(0.2126, 0.7152, 0.0722)));
+      col *= mix(vec3(1.0), mix(vec3(0.88, 0.98, 1.16), vec3(1.07, 1.0, 0.88), sl), uSplit);
+      col += vec3(0.0003, 0.0006, 0.0012) * uSplit;
 
       // ---- screen effects in perceptual space
       vec3 p = pow(col, vec3(1.0 / 2.2));
@@ -90,9 +132,10 @@ const HorrorShader = {
       float pl = dot(p, vec3(0.299, 0.587, 0.114));
       p = mix(p, vec3(pl), clamp(uDamage, 0.0, 1.0) * 0.35);
 
-      // vignette
-      float vig = 1.0 - uVignette * smoothstep(0.25, 0.95, d * 1.3);
-      p *= vig;
+      // vignette (aspect-aware oval, slightly cool as it darkens)
+      float vr = length(dc0 * vec2(mix(1.0, aspect, 0.6), 1.0));
+      float vig = 1.0 - uVignette * smoothstep(0.22, 0.98, vr * 1.22);
+      p *= vig * mix(vec3(1.0), vec3(0.94, 0.97, 1.0), (1.0 - vig));
 
       float pulse = 0.72 + 0.28 * sin(t * 7.5);
       float edge = smoothstep(0.26, 0.86, d * 1.25);
@@ -110,12 +153,14 @@ const HorrorShader = {
       }
 
       // very subtle scanlines
-      p *= 1.0 - 0.018 * (0.5 + 0.5 * sin(gl_FragCoord.y * 1.6 + t * 3.0));
+      p *= 1.0 - 0.012 * (0.5 + 0.5 * sin(gl_FragCoord.y * 1.6 + t * 3.0));
 
-      // animated film grain (stronger in shadows / mids)
-      float n = hash12(gl_FragCoord.xy + fract(t * 7.13) * 1000.0) - 0.5;
+      // fine animated film grain: triangular-distributed per pixel, re-rolled per frame, peaks in the mids
+      vec2 gs = gl_FragCoord.xy + floor(fract(t * 0.371) * 4096.0) * vec2(0.618, 1.414);
+      float n = hash12(gs) + hash12(gs + 17.31) - 1.0;
       float pl2 = dot(p, vec3(0.299, 0.587, 0.114));
-      p += n * uGrain * 0.17 * (1.0 - 0.6 * smoothstep(0.2, 1.0, pl2));
+      float gw = (0.45 + 0.55 * smoothstep(0.0, 0.18, pl2)) * (1.0 - 0.65 * smoothstep(0.35, 1.0, pl2));
+      p += n * uGrain * 0.13 * gw * vec3(1.0, 0.97, 1.04);
 
       col = pow(max(p, 0.0), vec3(2.2));
       gl_FragColor = vec4(col, 1.0);
@@ -124,7 +169,7 @@ const HorrorShader = {
 
 function pixelRatioFor(q) {
   const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-  return Math.min(dpr, q === 'high' ? 1.75 : 1);
+  return Math.min(dpr, q === 'high' ? 1.5 : 1);
 }
 
 export function createRenderer(container, quality = 'high') {
@@ -167,19 +212,23 @@ export function createRenderer(container, quality = 'high') {
 
   const state = { ...DEFAULTS, tint: DEFAULTS.tint.slice() };
 
-  let composer = null, renderPass = null, bloom = null, horror = null, output = null;
+  let composer = null, renderPass = null, bloom = null, horror = null, output = null, smaa = null;
+  const makeSMAA = () => {
+    try { const pr = renderer.getPixelRatio(); return new SMAAPass(W * pr, H * pr); } catch (e) { return null; }
+  };
   try {
     composer = new EffectComposer(renderer);
     renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
     if (q === 'high') {
-      bloom = new UnrealBloomPass(new THREE.Vector2(W, H), state.bloomStrength, 0.55, 0.72);
+      bloom = new UnrealBloomPass(new THREE.Vector2(W, H), state.bloomStrength, BLOOM_RADIUS, BLOOM_THRESHOLD);
       composer.addPass(bloom);
     }
     horror = new ShaderPass(HorrorShader);
     composer.addPass(horror);
     output = new OutputPass();
     composer.addPass(output);
+    if (q === 'high') { smaa = makeSMAA(); if (smaa) composer.addPass(smaa); }
   } catch (e) {
     console.warn('[renderer] post-processing unavailable, falling back to direct render', e);
     composer = null;
@@ -196,6 +245,10 @@ export function createRenderer(container, quality = 'high') {
       u.uSaturation.value = state.saturation;
       u.uExposure.value = state.exposure;
       u.uTint.value.set(state.tint[0], state.tint[1], state.tint[2]);
+      u.uContrast.value = state.contrast;
+      u.uSplit.value = state.split;
+      u.uHalation.value = q === 'high' ? state.halation : state.halation * 0.5;
+      u.uDistort.value = state.distort;
     } else {
       renderer.toneMappingExposure = state.exposure;
     }
@@ -215,6 +268,10 @@ export function createRenderer(container, quality = 'high') {
       if ('saturation' in params) state.saturation = num(params.saturation, 0, 3, state.saturation);
       if ('exposure' in params) state.exposure = num(params.exposure, 0, 8, state.exposure);
       if ('bloomStrength' in params) state.bloomStrength = num(params.bloomStrength, 0, 5, state.bloomStrength);
+      if ('contrast' in params) state.contrast = num(params.contrast, 0.5, 2, state.contrast);
+      if ('split' in params) state.split = num(params.split, 0, 2, state.split);
+      if ('halation' in params) state.halation = num(params.halation, 0, 4, state.halation);
+      if ('distort' in params) state.distort = num(params.distort, 0, 0.5, state.distort);
       if ('tint' in params && params.tint) {
         const t = params.tint;
         if (Array.isArray(t)) {
@@ -251,13 +308,21 @@ export function createRenderer(container, quality = 'high') {
     if (composer) {
       if (q === 'high' && !bloom) {
         try {
-          bloom = new UnrealBloomPass(new THREE.Vector2(W, H), state.bloomStrength, 0.55, 0.72);
+          bloom = new UnrealBloomPass(new THREE.Vector2(W, H), state.bloomStrength, BLOOM_RADIUS, BLOOM_THRESHOLD);
           composer.insertPass(bloom, 1);
         } catch (e) { bloom = null; }
       } else if (q === 'low' && bloom) {
         composer.removePass(bloom);
         try { bloom.dispose(); } catch (e) { /* ignore */ }
         bloom = null;
+      }
+      if (q === 'high' && !smaa) {
+        smaa = makeSMAA();
+        if (smaa) composer.addPass(smaa);
+      } else if (q === 'low' && smaa) {
+        composer.removePass(smaa);
+        try { smaa.dispose(); } catch (e) { /* ignore */ }
+        smaa = null;
       }
     }
     resize();

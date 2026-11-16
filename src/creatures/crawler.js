@@ -1,15 +1,30 @@
 // Crawler (Ch.II): low, wide, eight spindly legs with planted feet (2-bone IK), mandibles, red eye cluster.
 import * as THREE from 'three';
-import { WalkerAI, acquireShared, mesh, group, damp, clamp, rand } from './common.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { WalkerAI, acquireShared, mesh, group, damp, clamp, rand, wetSkin, eyeShine, clawMat } from './common.js';
 
 function buildShared() {
-  const shell = new THREE.MeshStandardMaterial({ color: 0x15110f, roughness: 0.3, metalness: 0.15 });
-  const leg = new THREE.MeshStandardMaterial({ color: 0x0e0b0a, roughness: 0.45, metalness: 0.1 });
-  const eye = new THREE.MeshStandardMaterial({ color: 0x300000, emissive: 0xff1a0a, emissiveIntensity: 2.2, roughness: 0.2 });
+  // oily iridescent chitin with a warm rim; glossy black legs; mandibles and eye clusters that bloom under the beam
+  const shell = wetSkin({ color: 0x1a120f, roughness: 0.3, metalness: 0.12, clearcoat: 1, clearcoatRoughness: 0.07,
+    iridescence: 0.35, iridescenceIOR: 1.3, iridescenceThicknessRange: [200, 420], sheen: 0.3, sheenColor: new THREE.Color(0x2e2426),
+    rim: 0x9a7466, rimStrength: 0.35, rimPower: 3.4, scale: 11, mottle: 0.35 });
+  const leg = clawMat(0x100b0a);
+  const eye = eyeShine(new THREE.MeshStandardMaterial({ color: 0x300000, emissive: 0xff1a0a, emissiveIntensity: 2.6, roughness: 0.15 }), 2.2);
+  const mandM = eyeShine(new THREE.MeshPhysicalMaterial({ color: 0x1a0505, emissive: 0x7a0c04, emissiveIntensity: 0.7, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.05 }), 1.4);
+  // dorsal spines along the thorax (one merged draw call)
+  const sp = [];
+  for (let r = 0; r < 5; r++) for (const x of [-0.13, 0.13]) {
+    const z = -0.32 + r * 0.16, xx = x * (1 - r * 0.06);
+    const yTop = 0.275 * Math.sqrt(Math.max(0.02, 1 - (xx / 0.625) ** 2 - (z / 0.6) ** 2));
+    const h = 0.16 - Math.abs(r - 2) * 0.025;
+    const g = new THREE.ConeGeometry(0.028, h, 5, 1); g.translate(0, h / 2, 0); g.rotateX(0.6); g.rotateZ(-Math.sign(x) * 0.35); g.translate(xx, yTop - 0.02, z);
+    sp.push(g.toNonIndexed()); g.dispose();
+  }
+  const spines = mergeGeometries(sp); sp.forEach((g) => g.dispose());
   const seg = new THREE.CylinderGeometry(1, 1, 1, 6, 1); seg.translate(0, 0.5, 0); // unit bone along +Y
   const segThin = new THREE.CylinderGeometry(0.55, 1, 1, 5, 1); segThin.translate(0, 0.5, 0);
   const mand = new THREE.ConeGeometry(0.05, 0.38, 5); mand.rotateX(-Math.PI / 2); mand.translate(0, 0, -0.17);
-  return { shell, leg, eye, seg, segThin, mand, body: new THREE.SphereGeometry(0.5, 14, 10), eyeG: new THREE.SphereGeometry(0.045, 6, 5) };
+  return { shell, leg, eye, mandM, spines, seg, segThin, mand, body: new THREE.SphereGeometry(0.5, 14, 10), eyeG: new THREE.SphereGeometry(0.045, 6, 5) };
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -30,17 +45,18 @@ export class Crawler extends WalkerAI {
     this.bodyH = 0.55; this.twitch = 0; this.twitchT = rand(0.5, 2); this.rear = 0; this.lungeT = 9;
     // body
     const body = this.body = group(this.object, 0, this.bodyH, 0);
-    this.thorax = mesh(S.body, S.shell, body); this.thorax.scale.set(1.25, 0.55, 1.2);
+    this.thorax = mesh(S.body, S.shell, body); this.thorax.scale.set(1.25, 0.55, 1.2); this.thorax.castShadow = true;
+    mesh(S.spines, S.leg, body);
     this.abd = [];
     for (let i = 0; i < 3; i++) {
       const a = group(i === 0 ? body : this.abd[i - 1], 0, i === 0 ? 0.05 : 0.02, i === 0 ? 0.5 : 0.36);
-      const m = mesh(S.body, S.shell, a, 0, 0.02, 0.2); const s = 0.95 - i * 0.22; m.scale.set(s, s * 0.7, s * 0.85);
+      const m = mesh(S.body, S.shell, a, 0, 0.02, 0.2); const s = 0.95 - i * 0.22; m.scale.set(s, s * 0.7, s * 0.85); if (i === 0) m.castShadow = true;
       this.abd.push(a);
     }
     const head = this.headG = group(body, 0, 0.04, -0.62);
-    const hm = mesh(S.body, S.shell, head); hm.scale.set(0.6, 0.42, 0.55);
-    this.mandL = mesh(S.mand, S.shell, head, -0.1, -0.08, -0.18);
-    this.mandR = mesh(S.mand, S.shell, head, 0.1, -0.08, -0.18);
+    const hm = mesh(S.body, S.shell, head); hm.scale.set(0.6, 0.42, 0.55); hm.castShadow = true;
+    this.mandL = mesh(S.mand, S.mandM, head, -0.1, -0.08, -0.18);
+    this.mandR = mesh(S.mand, S.mandM, head, 0.1, -0.08, -0.18);
     const ep = [[-0.07, 0.1, -0.24], [0.07, 0.1, -0.24], [-0.14, 0.07, -0.19], [0.14, 0.07, -0.19], [-0.035, 0.15, -0.2], [0.035, 0.15, -0.2]];
     ep.forEach(([x, y, z], i) => { const e = mesh(S.eyeG, S.eye, head, x, y, z); if (i > 3) e.scale.setScalar(0.7); });
     // legs: meshes live in root space, solved each frame

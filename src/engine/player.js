@@ -4,7 +4,8 @@ import * as THREE from 'three';
 const RADIUS = 0.35, HEIGHT = 1.75, CROUCH_HEIGHT = 1.15, EYE = 1.62, CROUCH_EYE = 1.0;
 const WALK = 3.4, SPRINT = 6.2, CROUCH_SPEED = 1.6, JUMP = 6;
 const SENS = 0.0022, PITCH_LIMIT = 1.45;
-const FLASH_INTENSITY = 220, FLASH_DIST = 55, FLASH_ANGLE = 0.42, FLASH_DECAY = 1.25;
+const FLASH_INTENSITY = 230, FLASH_DIST = 60, FLASH_ANGLE = 0.55, FLASH_DECAY = 1.0;
+const FLASH_COLOR = 0xffe9cc; // slightly warm incandescent
 const BATTERY_DRAIN = 0.16, BATTERY_RECHARGE = 0.4; // per second: ~10 min of light per charge; recharges while off
 
 const GOD = (() => { try { return new URLSearchParams(location.search).has('god'); } catch (e) { return false; } })();
@@ -24,21 +25,24 @@ function makeCookie() {
   g.fillStyle = '#000'; g.fillRect(0, 0, S, S);
   const grd = g.createRadialGradient(cx, cx, 0, cx, cx, R);
   grd.addColorStop(0.0, 'rgba(255,255,255,1)');
-  grd.addColorStop(0.1, 'rgba(255,252,244,1)');
-  grd.addColorStop(0.24, 'rgba(240,232,214,0.86)');
-  grd.addColorStop(0.42, 'rgba(214,204,186,0.62)');
-  grd.addColorStop(0.62, 'rgba(170,162,146,0.42)');
-  grd.addColorStop(0.82, 'rgba(110,104,94,0.22)');
-  grd.addColorStop(0.95, 'rgba(40,38,34,0.06)');
+  grd.addColorStop(0.08, 'rgba(255,253,248,1)');
+  grd.addColorStop(0.18, 'rgba(250,242,228,0.9)');
+  grd.addColorStop(0.3, 'rgba(236,224,204,0.66)');
+  grd.addColorStop(0.46, 'rgba(206,194,174,0.42)');
+  grd.addColorStop(0.64, 'rgba(160,152,138,0.25)');
+  grd.addColorStop(0.82, 'rgba(100,96,88,0.12)');
+  grd.addColorStop(0.95, 'rgba(40,38,34,0.035)');
   grd.addColorStop(1.0, 'rgba(0,0,0,0)');
   g.fillStyle = grd; g.beginPath(); g.arc(cx, cx, R, 0, Math.PI * 2); g.fill();
   // reflector rings
-  for (const [r, a, w] of [[0.16, 0.22, 3], [0.3, 0.12, 5], [0.5, 0.1, 4], [0.68, 0.08, 7], [0.86, 0.05, 5]]) {
+  for (const [r, a, w] of [[0.12, 0.16, 2], [0.21, 0.1, 4], [0.34, 0.08, 3], [0.52, 0.07, 6], [0.7, 0.05, 5], [0.88, 0.035, 8]]) {
     g.strokeStyle = `rgba(255,246,228,${a})`; g.lineWidth = w;
     g.beginPath(); g.arc(cx, cx, r * R, 0, Math.PI * 2); g.stroke();
   }
-  g.strokeStyle = 'rgba(0,0,0,0.2)'; g.lineWidth = 6;
-  g.beginPath(); g.arc(cx, cx, 0.4 * R, 0, Math.PI * 2); g.stroke();
+  g.strokeStyle = 'rgba(0,0,0,0.13)'; g.lineWidth = 7;
+  g.beginPath(); g.arc(cx, cx, 0.27 * R, 0, Math.PI * 2); g.stroke();
+  g.strokeStyle = 'rgba(0,0,0,0.08)'; g.lineWidth = 10;
+  g.beginPath(); g.arc(cx, cx, 0.6 * R, 0, Math.PI * 2); g.stroke();
   // dirt & smudges on the lens
   for (let i = 0; i < 70; i++) {
     const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * R * 0.92;
@@ -59,6 +63,119 @@ function makeCookie() {
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   cookieTex = tex;
   return tex;
+}
+
+// ------------------------------------------------------------------ volumetric beam (additive cone)
+const BEAM_VS = /* glsl */`
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView;
+  void main() {
+    vLocal = position;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    vec4 mv = viewMatrix * wp;
+    vView = mv.xyz;
+    vNrm = normalize(normalMatrix * normal);
+    gl_Position = projectionMatrix * mv;
+  }`;
+const BEAM_FS = /* glsl */`
+  uniform vec3 uColor; uniform float uIntensity; uniform float uTime; uniform float uLen; uniform float uNear;
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView;
+  float h3(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+  float vnoise(vec3 p) {
+    vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    float a = mix(mix(h3(i), h3(i + vec3(1.0, 0.0, 0.0)), f.x), mix(h3(i + vec3(0.0, 1.0, 0.0)), h3(i + vec3(1.0, 1.0, 0.0)), f.x), f.y);
+    float b = mix(mix(h3(i + vec3(0.0, 0.0, 1.0)), h3(i + vec3(1.0, 0.0, 1.0)), f.x), mix(h3(i + vec3(0.0, 1.0, 1.0)), h3(i + vec3(1.0, 1.0, 1.0)), f.x), f.y);
+    return mix(a, b, f.z);
+  }
+  void main() {
+    float s = clamp(-vLocal.z / uLen, 0.0, 1.0);
+    float fres = abs(dot(normalize(vNrm), normalize(-vView)));
+    float edge = 0.28 + 0.72 * smoothstep(0.0, 0.5, fres);
+    float along = smoothstep(0.0, 0.1, s) * pow(1.0 - s, 1.7);
+    float nearFade = smoothstep(uNear, uNear + 2.2, -vView.z);
+    vec3 q = vWorld * 0.6 + vec3(uTime * 0.04, uTime * 0.07, -uTime * 0.05);
+    float n = vnoise(q) * 0.62 + vnoise(q * 2.7 + 5.3) * 0.38;
+    float dust = 0.35 + 1.3 * n * n;
+    float a = uIntensity * edge * along * nearFade * dust;
+    gl_FragColor = vec4(uColor * a, 1.0);
+  }`;
+
+function makeBeam(len, angle, near = 0.6) {
+  const geo = new THREE.ConeGeometry(Math.tan(angle) * len, len, 28, 1, true);
+  geo.translate(0, -len / 2, 0);
+  geo.rotateX(Math.PI / 2); // apex at origin, opening down -Z
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(FLASH_COLOR) }, uIntensity: { value: 0 }, uTime: { value: 0 },
+      uLen: { value: len }, uNear: { value: near },
+    },
+    vertexShader: BEAM_VS, fragmentShader: BEAM_FS,
+    transparent: true, depthWrite: false, depthTest: true, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, fog: false, toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; mesh.renderOrder = 4; mesh.name = 'flashlight-beam';
+  mesh.visible = false;
+  return mesh;
+}
+
+// beam strength scales with the scene's fog (scattering medium): faint in clear vacuum, readable in haze
+function fogScatter(scene) {
+  const f = scene && scene.fog;
+  if (!f) return 0.3;
+  if (typeof f.density === 'number') return clamp(f.density / 0.02, 0.3, 1.6);
+  if (typeof f.far === 'number' && f.far > 0) return clamp(40 / f.far, 0.3, 1.6);
+  return 0.6;
+}
+
+const MOTE_COUNT = 320, MOTE_BOX = 9;
+const MOTE_VS = /* glsl */`
+  attribute vec4 aSeed;
+  uniform vec3 uCam; uniform float uTime; uniform vec3 uBeamO; uniform vec3 uBeamD; uniform float uCos; uniform float uI; uniform float uScale;
+  varying float vA;
+  void main() {
+    float B = ${MOTE_BOX.toFixed(1)};
+    vec3 p = aSeed.xyz * B + vec3(0.05, -0.035, 0.04) * uTime * (0.4 + aSeed.w)
+      + vec3(sin(uTime * 0.3 + aSeed.w * 40.0), sin(uTime * 0.23 + aSeed.w * 17.0), cos(uTime * 0.27 + aSeed.w * 29.0)) * 0.12;
+    vec3 rel = mod(p - uCam, B) - 0.5 * B;
+    vec3 wp = uCam + rel;
+    vec3 L = wp - uBeamO; float dl = length(L);
+    float c = dot(L / max(dl, 1e-4), uBeamD);
+    float inBeam = smoothstep(uCos, mix(uCos, 1.0, 0.55), c) * smoothstep(0.25, 0.9, dl) * (1.0 - smoothstep(B * 0.32, B * 0.5, length(rel)));
+    float tw = 0.5 + 0.5 * sin(uTime * (1.3 + aSeed.w * 3.5) + aSeed.w * 61.0);
+    vA = inBeam * (0.15 + 0.85 * tw * tw * tw) * uI / (1.0 + 0.12 * dl);
+    vec4 mv = viewMatrix * vec4(wp, 1.0);
+    gl_Position = projectionMatrix * mv;
+    gl_PointSize = vA <= 0.002 ? 0.0 : clamp((0.012 + 0.012 * aSeed.w) * uScale / max(-mv.z, 0.1), 1.0, 7.0);
+  }`;
+const MOTE_FS = /* glsl */`
+  uniform vec3 uColor; varying float vA;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5; float d = dot(c, c) * 4.0;
+    if (d > 1.0) discard;
+    gl_FragColor = vec4(uColor * vA * (1.0 - d) * (1.0 - d), 1.0);
+  }`;
+
+function makeMotes() {
+  const geo = new THREE.BufferGeometry();
+  const seed = new Float32Array(MOTE_COUNT * 4);
+  for (let i = 0; i < seed.length; i++) seed[i] = Math.random();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MOTE_COUNT * 3), 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uCam: { value: new THREE.Vector3() }, uTime: { value: 0 }, uBeamO: { value: new THREE.Vector3() },
+      uBeamD: { value: new THREE.Vector3(0, 0, -1) }, uCos: { value: Math.cos(FLASH_ANGLE * 0.85) }, uI: { value: 0 },
+      uScale: { value: 400 }, uColor: { value: new THREE.Color(1.6, 1.4, 1.15) },
+    },
+    vertexShader: MOTE_VS, fragmentShader: MOTE_FS,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, toneMapped: false,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false; pts.renderOrder = 5; pts.name = 'flashlight-dust';
+  pts.visible = false;
+  return pts;
 }
 
 // ================================================================== LocalPlayer
@@ -103,13 +220,13 @@ export class LocalPlayer {
 
     // flashlight: SpotLight on a spring-lagged rig parented to the camera
     const high = ctx.quality !== 'low';
-    const spot = new THREE.SpotLight(0xfff1d6, 0, FLASH_DIST, FLASH_ANGLE, 0.45, FLASH_DECAY);
+    const spot = new THREE.SpotLight(FLASH_COLOR, 0, FLASH_DIST, FLASH_ANGLE, 0.62, FLASH_DECAY);
     spot.castShadow = true;
     spot.shadow.mapSize.set(high ? 1024 : 512, high ? 1024 : 512);
-    spot.shadow.bias = -0.00012;
-    spot.shadow.normalBias = 0.03;
+    spot.shadow.bias = -0.00022;
+    spot.shadow.normalBias = 0.035;
     spot.shadow.focus = 1;
-    spot.shadow.camera.near = 0.15;
+    spot.shadow.camera.near = 0.25;
     spot.shadow.camera.far = FLASH_DIST;
     try { spot.map = makeCookie(); } catch (e) { /* no canvas */ }
     spot.position.set(0.24, -0.2, 0.05);
@@ -120,7 +237,26 @@ export class LocalPlayer {
     this._rig.add(spot);
     this._rig.add(spot.target);
     this.flashlight = spot;
+    // volumetric shaft + dust motes that only sparkle inside the beam
+    this._high = high;
+    this._beam = makeBeam(26, FLASH_ANGLE * 0.82, 0.5);
+    this._beam.position.copy(spot.position);
+    this._beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3().subVectors(spot.target.position, spot.position).normalize());
+    this._rig.add(this._beam);
+    this._motes = makeMotes();
+    this._rig.add(this._motes);
+    this._fxT = 0; this._beamO = new THREE.Vector3(); this._beamTgt = new THREE.Vector3();
     ctx.camera?.add?.(this._rig);
+  }
+
+  // Throw the player (jump pads, explosions): sets velocity, leaves the ground, clears coyote/jump buffer.
+  launch(vel) {
+    if (!vel) return;
+    this.velocity.set(+vel.x || 0, +vel.y || 0, +vel.z || 0);
+    this.onGround = false;
+    this._coyote = 0; this._jumpBuf = 0;
+    this._minVy = Math.min(0, this.velocity.y);
   }
 
   // ---------------------------------------------------------------- public API
@@ -209,6 +345,7 @@ export class LocalPlayer {
   dispose() {
     try { this._rig.removeFromParent(); } catch (e) { /* ignore */ }
     try { this.flashlight.dispose(); } catch (e) { /* ignore */ }
+    for (const o of [this._beam, this._motes]) { try { o.geometry.dispose(); o.material.dispose(); } catch (e) { /* ignore */ } }
     try { this.ctx.audio?.setMuffle?.(0); } catch (e) { /* ignore */ }
     try { this.ctx.post?.set?.({ damage: 0 }); } catch (e) { /* ignore */ }
   }
@@ -400,7 +537,25 @@ export class LocalPlayer {
     }
     const killY = (world && typeof world.killY === 'number') ? world.killY : -60;
     if (pos.y < killY) {
-      pos.copy(this._safe); pos.y += 0.05;
+      // last safe spot only if the ground under it still exists at roughly the same height
+      let ok = false;
+      try {
+        const sf = this._safe, gh = world?.groundHeight?.(sf.x, sf.z, sf.y + 1.2);
+        if (typeof gh === 'number' && isFinite(gh) && Math.abs(gh - sf.y) < 1.0) { pos.set(sf.x, Math.max(gh, sf.y), sf.z); ok = true; }
+      } catch (e) { ok = false; }
+      if (!ok) {
+        let sp = null;
+        try { sp = ctx.level?.spawnPoints?.()?.[0] || null; } catch (e) { sp = null; }
+        if (sp && isFinite(+sp.x) && isFinite(+sp.z)) {
+          pos.set(+sp.x, isFinite(+sp.y) ? +sp.y : 0, +sp.z);
+          try {
+            const gh = world?.groundHeight?.(pos.x, pos.z, pos.y + 1.2);
+            if (typeof gh === 'number' && isFinite(gh) && gh > pos.y - 3 && gh - pos.y < 1.2) pos.y = Math.max(pos.y, gh);
+          } catch (e) { /* ignore */ }
+        } else pos.copy(this._safe);
+        this._safe.copy(pos); this._safeTimer = 0;
+      }
+      pos.y += 0.05;
       v.set(0, 0, 0);
       this._minVy = 0;
       ctx.fx?.flash?.(0x000000, 1, 0.9);
@@ -438,6 +593,7 @@ export class LocalPlayer {
     if (this._flashI < 0.05) this._flashI = target > 0 ? this._flashI : 0;
     spot.intensity = this._flashI;
     spot.shadow.autoUpdate = this._flashI > 0.5;
+    this._updateBeamFx(dt);
 
     // spring-lagged sway behind camera rotation + hand bob
     if (!cine) {
@@ -473,7 +629,35 @@ export class LocalPlayer {
         if (hit && isFinite(hit.distance)) d = hit.distance;
       }
     } catch (e) { d = 45; }
-    this._beamWant = clamp(Math.pow(Math.max(d, 0.1) / 7, FLASH_DECAY), 1, 2.6);
+    // softer up close (no blow-out at arm's length), stronger throw over open ground
+    this._beamWant = clamp(Math.pow(Math.max(d, 0.1) / 7, FLASH_DECAY), 0.5, 2.6);
+  }
+
+  _updateBeamFx(dt) {
+    const beam = this._beam, motes = this._motes;
+    if (!beam || !motes) return;
+    const k = this._flashI / FLASH_INTENSITY;
+    const on = k > 0.01;
+    beam.visible = on; motes.visible = on;
+    if (!on) return;
+    this._fxT = (this._fxT + dt) % 1000;
+    const scat = fogScatter(this.ctx.scene);
+    const bu = beam.material.uniforms;
+    bu.uTime.value = this._fxT;
+    bu.uIntensity.value = 0.018 * scat * Math.min(k, 1.6);
+    try {
+      this._rig.updateWorldMatrix(true, true);
+      const spot = this.flashlight, mu = motes.material.uniforms;
+      spot.getWorldPosition(this._beamO);
+      spot.target.getWorldPosition(this._beamTgt);
+      mu.uBeamO.value.copy(this._beamO);
+      mu.uBeamD.value.subVectors(this._beamTgt, this._beamO).normalize();
+      this.ctx.camera?.getWorldPosition?.(mu.uCam.value);
+      mu.uTime.value = this._fxT;
+      mu.uI.value = Math.min(k, 1.5) * (0.55 + 0.45 * Math.min(scat, 1.2));
+      const el = this.ctx.renderer?.domElement || this.ctx.renderer?.renderer?.domElement;
+      if (el && el.height) mu.uScale.value = el.height * 0.5;
+    } catch (e) { motes.visible = false; }
   }
 
   _vitals(dt) {
@@ -712,29 +896,16 @@ export class RemotePlayer {
     this.aim = new THREE.Group();
     this.aim.position.set(0, 1.62, 0);
     this.body.add(this.aim);
-    this.light = new THREE.SpotLight(0xfff1d6, 0, 40, FLASH_ANGLE, 0.5, FLASH_DECAY);
+    this.light = new THREE.SpotLight(FLASH_COLOR, 0, 40, FLASH_ANGLE, 0.62, FLASH_DECAY);
     this.light.castShadow = false;
     this.light.position.set(0.16, -0.08, -0.18);
     this.light.target.position.set(0.0, -0.1, -10);
     this.aim.add(this.light); this.aim.add(this.light.target);
-    const coneLen = 6.5, coneR = Math.tan(FLASH_ANGLE) * coneLen;
-    const coneGeo = G(new THREE.ConeGeometry(coneR, coneLen, 24, 1, true));
-    coneGeo.translate(0, -coneLen / 2, 0);
-    coneGeo.rotateX(Math.PI / 2);
-    const gc = document.createElement('canvas'); gc.width = 4; gc.height = 64;
-    const gctx = gc.getContext('2d');
-    const lg = gctx.createLinearGradient(0, 0, 0, 64);
-    lg.addColorStop(0, '#ffffff'); lg.addColorStop(0.35, '#555555'); lg.addColorStop(1, '#000000');
-    gctx.fillStyle = lg; gctx.fillRect(0, 0, 4, 64);
-    const alphaTex = track(new THREE.CanvasTexture(gc));
-    const coneMat = track(new THREE.MeshBasicMaterial({
-      color: 0xfff1d6, alphaMap: alphaTex, transparent: true, opacity: 0.05,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    }));
-    this.cone = new THREE.Mesh(coneGeo, coneMat);
+    this.cone = makeBeam(18, FLASH_ANGLE * 0.82, 0.3);
+    track(this.cone.geometry); track(this.cone.material);
     this.cone.position.copy(this.light.position);
-    this.cone.visible = false;
-    this.cone.renderOrder = 4;
+    this.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3().subVectors(this.light.target.position, this.light.position).normalize());
     this.aim.add(this.cone);
 
     // name tag
@@ -861,7 +1032,10 @@ export class RemotePlayer {
       this._lightI = damp(this._lightI, on ? 150 : 0, 18, dt);
       this.light.intensity = this._lightI < 0.05 ? 0 : this._lightI;
       this.cone.visible = this._lightI > 2;
-      this.cone.material.opacity = 0.05 * (this._lightI / 150);
+      const cu = this.cone.material.uniforms;
+      this._coneT = ((this._coneT || 0) + dt) % 1000;
+      cu.uTime.value = this._coneT;
+      cu.uIntensity.value = 0.024 * fogScatter(ctx.scene) * (this._lightI / 150);
 
       // name tag
       this._drawTag();

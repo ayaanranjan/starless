@@ -1,6 +1,6 @@
 // Colossal decor: Leviathan (Ch.I sky) and Watcher (Ch.III eye cluster). Non-hostile, no AI sync.
 import * as THREE from 'three';
-import { CreatureBase, acquireShared, mesh, group, damp, clamp, rand, validTarget, localPlayer } from './common.js';
+import { CreatureBase, acquireShared, mesh, group, damp, clamp, rand, validTarget, localPlayer, wetSkin } from './common.js';
 
 // ---------------- Leviathan ----------------
 function spotsTexture() {
@@ -20,7 +20,10 @@ function buildLeviathanShared(ctx) {
   const tex = spotsTexture();
   const fogC = ctx?.scene?.fog?.color;
   const col = fogC ? fogC.clone().multiplyScalar(0.18) : new THREE.Color(0x0b0e0c);
-  const body = new THREE.MeshStandardMaterial({ color: col, roughness: 0.7, metalness: 0.05, emissive: 0x63ffe6, emissiveMap: tex, emissiveIntensity: 0.8, fog: false });
+  // slick hide + broad haze-coloured fresnel rim: the colossus reads as a silhouette carved out of the atmosphere
+  const hazeC = fogC ? fogC.clone().lerp(new THREE.Color(0x9fd8d0), 0.35) : new THREE.Color(0x5a7a70);
+  const body = wetSkin({ color: col, roughness: 0.6, metalness: 0.05, clearcoat: 0.6, clearcoatRoughness: 0.3, sheen: 0, emissive: 0x63ffe6, emissiveMap: tex,
+    emissiveIntensity: 0.8, fog: false, rim: hazeC.getHex(), rimStrength: 3.2, rimPower: 2.2, scale: 5, mottle: 0.25, bands: 0.4 });
   const fin = new THREE.MeshStandardMaterial({ color: col, roughness: 0.8, fog: false, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
   const tent = limbDown(1.6, 0.15, 60, 7, 10);
   return { tex, body, fin, seg: new THREE.SphereGeometry(1, 20, 14), tent };
@@ -128,12 +131,21 @@ function eyeTexture() {
   g.strokeStyle = 'rgba(255,200,120,0.25)';
   for (let i = 0; i < 40; i++) { const a = Math.random() * Math.PI * 2; g.beginPath(); g.moveTo(cx + Math.cos(a) * 16, cy + Math.sin(a) * 16); g.lineTo(cx + Math.cos(a) * 44, cy + Math.sin(a) * 44); g.stroke(); }
   g.fillStyle = '#000'; g.beginPath(); g.ellipse(cx, cy, 9, 26, 0, 0, Math.PI * 2); g.fill();
+  // dark limbal ring + bloodshot rim + wet specular glints (the eyes always face the viewer, so baked glints read as the beam's reflection)
+  g.strokeStyle = 'rgba(10,0,0,0.75)'; g.lineWidth = 6; g.beginPath(); g.arc(cx, cy, 47, 0, Math.PI * 2); g.stroke();
+  const ring = g.createRadialGradient(cx, cy, 48, cx, cy, 78); ring.addColorStop(0, 'rgba(150,20,15,0.55)'); ring.addColorStop(1, 'rgba(150,20,15,0)');
+  g.fillStyle = ring; g.beginPath(); g.arc(cx, cy, 78, 0, Math.PI * 2); g.arc(cx, cy, 48, 0, Math.PI * 2, true); g.fill();
+  for (const [hx, hy, hr, ha] of [[cx - 15, cy - 19, 13, 0.95], [cx + 11, cy + 15, 5, 0.6]]) {
+    const hl = g.createRadialGradient(hx, hy, 0, hx, hy, hr); hl.addColorStop(0, `rgba(255,255,255,${ha})`); hl.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = hl; g.beginPath(); g.arc(hx, hy, hr, 0, Math.PI * 2); g.fill();
+  }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 function buildWatcherShared() {
   const tex = eyeTexture();
   const eye = new THREE.MeshBasicMaterial({ map: tex, fog: false });
-  const flesh = new THREE.MeshStandardMaterial({ color: 0x0b0710, roughness: 0.45, metalness: 0.1, emissive: 0x1d0a33, emissiveIntensity: 0.6, fog: false });
+  const flesh = wetSkin({ color: 0x0d0812, roughness: 0.4, metalness: 0.05, emissive: 0x1d0a33, emissiveIntensity: 0.6, fog: false,
+    clearcoat: 0.9, clearcoatRoughness: 0.1, sheen: 0.5, sheenColor: new THREE.Color(0x4a1a5a), rim: 0x8a5ad0, rimStrength: 1.4, rimPower: 2.8, scale: 9, mottle: 0.4 });
   const core = new THREE.SphereGeometry(1, 32, 24);
   const pos = core.attributes.position, v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); const k = 1 + Math.sin(v.x * 5.1) * 0.08 + Math.sin(v.y * 6.3 + v.z * 3.1) * 0.07; v.multiplyScalar(k); pos.setXYZ(i, v.x, v.y, v.z); }

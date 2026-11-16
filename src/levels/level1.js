@@ -1,7 +1,7 @@
 // CHAPTER I — THE DROWNING WORLD (planet VESPER). Owner: L1.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { SITES, makeHeightfield, buildTerrain, buildSky, Particles, Spores, makeBolt } from './l1/env.js';
+import { SITES, makeHeightfield, buildTerrain, buildSky, Particles, Spores, makeBolt, buildShafts, GroundMist, addRockDetail } from './l1/env.js';
 import {
   P, merged, glowSprite, buildLander, buildRocket, buildValve, buildBody, buildLogDevice, buildVent,
   buildPartModel, buildShuttle, buildAntenna, ribcageGeometries, spireGeometry,
@@ -9,7 +9,7 @@ import {
 
 const PHASES = ['explore', 'install', 'launch1', 'valves', 'relaunch', 'launch2', 'done'];
 const PI = (p) => PHASES.indexOf(p);
-const FOG = 0x26321f;
+const FOG = 0x3c4522;
 const RUIZ = 'KESTREL — CMDR. RUIZ';
 
 const PARTS = [
@@ -87,12 +87,12 @@ export default class Level1 {
     this.fogBase = new THREE.Color(FOG);
     this.fogFlash = new THREE.Color(0x86a88a);
     this.fogAlarm = new THREE.Color(0x3a1712);
-    this.fog = new THREE.FogExp2(FOG, 0.026);
+    this.fog = new THREE.FogExp2(FOG, 0.019);
     scene.fog = this.fog;
     scene.background = this.fog.color;
-    this.hemi = new THREE.HemisphereLight(0x90a070, 0x1c160a, 0.4);
+    this.hemi = new THREE.HemisphereLight(0xb8c47a, 0x2a2412, 0.85);
     this.root.add(this.hemi);
-    this.moon = new THREE.DirectionalLight(0xa8c4a0, 0.35);
+    this.moon = new THREE.DirectionalLight(0xc8c890, 0.55);
     this.root.add(this.moon);
     this.root.add(this.moon.target);
     ctx.fx?.setGrade?.({ saturation: 0.82, exposure: 1.0, tint: [0.96, 1.04, 0.9] });
@@ -108,8 +108,12 @@ export default class Level1 {
 
     // sky
     this.sky = buildSky(ctx.camera, FOG);
+    this.sky.skyU.horizon.value = this.fog.color; // sky horizon tracks fog (alarm / flash tints)
     this.root.add(this.sky.group);
     this.moon.position.copy(this.sky.dir).multiplyScalar(100);
+    this.shafts = buildShafts(H, this.sky.dir, low ? 6 : 10, rng);
+    this.mist = new GroundMist(H, low ? 18 : 34, rng);
+    this.root.add(this.shafts.mesh, this.mist.mesh);
     this.boltMat = new THREE.MeshBasicMaterial({ color: 0xdcffe6, fog: false, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false });
     this.bolt = new THREE.Mesh(new THREE.BufferGeometry(), this.boltMat);
     this.bolt.visible = false; this.bolt.frustumCulled = false;
@@ -224,7 +228,7 @@ export default class Level1 {
       spires.push({ x, z, r, h: big ? 9 + rng() * 22 : 2 + rng() * 6, col: big });
     }
     const sg = spireGeometry();
-    const smat = new THREE.MeshStandardMaterial({ color: 0x1d1c18, roughness: 0.95, metalness: 0.05, flatShading: true });
+    const smat = addRockDetail(new THREE.MeshStandardMaterial({ color: 0x24231d, roughness: 0.95, metalness: 0.05, flatShading: true }));
     const sim = new THREE.InstancedMesh(sg, smat, spires.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), p = new THREE.Vector3();
     spires.forEach((sp, i) => {
@@ -280,7 +284,7 @@ export default class Level1 {
 
     // small rocks
     const NR = 300, nr = low ? 160 : NR;
-    const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0x24221d, roughness: 1, flatShading: true }), nr);
+    const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), addRockDetail(new THREE.MeshStandardMaterial({ color: 0x2a2820, roughness: 1, flatShading: true })), nr);
     for (let i = 0; i < NR; i++) {
       const x = (rng() * 2 - 1) * 165, z = (rng() * 2 - 1) * 165, r = 0.15 + rng() * rng() * 1.1;
       e.set(rng() * 3, rng() * 3, rng() * 3);
@@ -615,7 +619,7 @@ export default class Level1 {
       const d = s.position.distanceTo(pos);
       if (d < bd) { bd = d; best = s; }
     }
-    try { best?.hearNoise?.(pos, loud); } catch (e) { /* */ }
+    try { best?.hearNoise?.(pos, Math.max(loud, bd / 20)); } catch (e) { /* */ }
   }
 
   // ------------------------------------------------------------ events (all peers)
@@ -661,7 +665,7 @@ export default class Level1 {
         const i = data.i | 0;
         if (i < 0 || i >= this.valves.length || this.st.ph !== 'valves' || this.st.valves[i]) return;
         this._applyValve(i, false);
-        if (host) { for (const s of this.stalkers) { if (s?.position && s.position.distanceTo(this.valves[i].pos) < 40) try { s.hearNoise?.(this.valves[i].pos, 0.5); } catch (e) { /* */ } } }
+        if (host) { for (const s of this.stalkers) { if (s?.position && s.position.distanceTo(this.valves[i].pos) < 40) try { s.hearNoise?.(this.valves[i].pos, 2.2); } catch (e) { /* */ } } }
         if (this.st.valves.every((v) => v)) {
           this._setPhase('relaunch');
           ctx.ui?.subtitle?.('HALE', 'Coolant pressure holding. Get to the hatch. Now.', 4);
@@ -725,7 +729,7 @@ export default class Level1 {
       for (const [id, pl] of this._players()) {
         if (pl?.position && !pl.downed && pl.position.distanceTo(R) < 8) ctx.damagePlayer?.(id, 15, R);
       }
-      for (const s of this.stalkers) try { s?.hearNoise?.(R.clone(), 1); } catch (e) { /* */ }
+      for (const s of this.stalkers) try { s?.hearNoise?.(R.clone(), 4); } catch (e) { /* */ }
       ctx.checkpoint?.();
     }
   }
@@ -766,6 +770,8 @@ export default class Level1 {
       ctx.camera?.getWorldPosition?.(this._cam);
       const cam = this._cam;
       this.sky.update(dt, cam);
+      this.shafts?.update(dt);
+      this.mist?.update(dt, cam, this.fog.color);
       // particles
       const rh = ctx.renderer?.domElement?.height || innerHeight;
       const fov = ctx.camera?.fov || 75;
@@ -861,8 +867,9 @@ export default class Level1 {
     }
     this.flashAmt = Math.max(0, this.flashAmt - dt * 2.6);
     const fl = this.flashAmt * (0.6 + Math.random() * 0.4);
-    this.moon.intensity = 0.35 + fl * 5;
-    this.hemi.intensity = 0.4 + fl * 1.4;
+    this.moon.intensity = 0.55 + fl * 6;
+    this.hemi.intensity = 0.85 + fl * 2.2;
+    this.sky.setFlash?.(fl);
     const fc = this.fog.color.copy(this.fogBase);
     if (this.st.ph === 'valves') fc.lerp(this.fogAlarm, (0.5 + 0.5 * Math.sin(this.clock * 4.2)) * 0.35);
     fc.lerp(this.fogFlash, fl * 0.7);

@@ -317,13 +317,17 @@ function copyText(text) {
   });
 }
 let copyT = 0;
+function inviteLink(code) {
+  try { const u = new URL(location.href); u.search = '?join=' + encodeURIComponent(code); u.hash = ''; return u.toString(); }
+  catch (e) { return code; }
+}
 function copyCode() {
   const code = lobby.code ? String(lobby.code).toUpperCase() : '';
   if (!code) return;
-  copyText(code).then((ok) => {
-    setLabel(E.lCopy, ok ? 'COPIED' : 'COPY FAILED');
+  copyText(inviteLink(code)).then((ok) => {
+    setLabel(E.lCopy, ok ? 'LINK COPIED' : 'COPY FAILED');
     clearTimeout(copyT);
-    copyT = setTimeout(() => setLabel(E.lCopy, 'COPY'), 1600);
+    copyT = setTimeout(() => setLabel(E.lCopy, 'COPY INVITE LINK'), 1600);
   });
 }
 let startLockT = 0;
@@ -333,8 +337,8 @@ function buildLobby() {
   h('div', 'sl-kicker', '// CREW CHANNEL', p);
   E.lCodeWrap = h('div', 'sl-lcode', null, p);
   E.lCode = h('div', 'sl-lcode-v', '', E.lCodeWrap);
-  E.lCopy = button('COPY', copyCode, 'small', E.lCodeWrap);
-  E.lHint = h('div', 'sl-lhint', 'Send this code to your crew', p);
+  E.lCopy = button('COPY INVITE LINK', copyCode, 'small', E.lCodeWrap);
+  E.lHint = h('div', 'sl-lhint', 'Send the invite link (or the code) to your crew', p);
   const slots = h('div', 'sl-slots', null, p);
   for (let i = 0; i < MAXP; i++) {
     const row = h('div', 'sl-slot empty', null, slots);
