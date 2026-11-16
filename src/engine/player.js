@@ -67,9 +67,11 @@ function makeCookie() {
 
 // ------------------------------------------------------------------ volumetric beam (additive cone)
 const BEAM_VS = /* glsl */`
-  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView;
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView; varying vec3 vApex; varying vec3 vAxis;
   void main() {
     vLocal = position;
+    vApex = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    vAxis = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, -1.0));
     vec4 wp = modelMatrix * vec4(position, 1.0);
     vWorld = wp.xyz;
     vec4 mv = viewMatrix * wp;
@@ -79,7 +81,7 @@ const BEAM_VS = /* glsl */`
   }`;
 const BEAM_FS = /* glsl */`
   uniform vec3 uColor; uniform float uIntensity; uniform float uTime; uniform float uLen; uniform float uNear;
-  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView;
+  varying vec3 vWorld; varying vec3 vLocal; varying vec3 vNrm; varying vec3 vView; varying vec3 vApex; varying vec3 vAxis;
   float h3(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
   float vnoise(vec3 p) {
     vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -96,7 +98,9 @@ const BEAM_FS = /* glsl */`
     vec3 q = vWorld * 0.6 + vec3(uTime * 0.04, uTime * 0.07, -uTime * 0.05);
     float n = vnoise(q) * 0.62 + vnoise(q * 2.7 + 5.3) * 0.38;
     float dust = 0.35 + 1.3 * n * n;
-    float a = uIntensity * edge * along * nearFade * dust;
+    float facing = dot(vAxis, normalize(cameraPosition - vApex));
+    float faceFade = 1.0 - smoothstep(0.35, 0.8, facing); // looking into a beam: don't stack additive glare
+    float a = uIntensity * edge * along * nearFade * dust * faceFade;
     gl_FragColor = vec4(uColor * a, 1.0);
   }`;
 
@@ -627,6 +631,18 @@ export class LocalPlayer {
         cam.getWorldDirection(this._rayD);
         const hit = world.raycast(this._rayO, this._rayD, 45);
         if (hit && isFinite(hit.distance)) d = hit.distance;
+        // teammates aren't in the collision world: if one stands in the beam, aim the throw at them (no white-suit blowout)
+        const players = this.ctx.players;
+        if (players && typeof players.values === 'function') {
+          for (const p of players.values()) {
+            if (!p || p.isLocal || !p.position) continue;
+            const dx = p.position.x - this._rayO.x, dy = p.position.y + 1.1 - this._rayO.y, dz = p.position.z - this._rayO.z;
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist < 0.01 || dist >= d) continue;
+            const cos = (dx * this._rayD.x + dy * this._rayD.y + dz * this._rayD.z) / dist;
+            if (cos > 0.93) d = dist; // within ~21 degrees of the beam axis
+          }
+        }
       }
     } catch (e) { d = 45; }
     // softer up close (no blow-out at arm's length), stronger throw over open ground
@@ -823,7 +839,7 @@ export class RemotePlayer {
     this._disposables = [];
 
     const track = (x) => { this._disposables.push(x); return x; };
-    const suit = track(new THREE.MeshStandardMaterial({ color: 0xc9ccd1, roughness: 0.78, metalness: 0.05 }));
+    const suit = track(new THREE.MeshStandardMaterial({ color: 0x9da2a9, roughness: 0.85, metalness: 0.05 }));
     const suit2 = track(new THREE.MeshStandardMaterial({ color: 0x8d939b, roughness: 0.7, metalness: 0.15 }));
     const dark = track(new THREE.MeshStandardMaterial({ color: 0x23272d, roughness: 0.55, metalness: 0.45 }));
     this._accent = track(new THREE.MeshStandardMaterial({ color: this.color, emissive: this.color, emissiveIntensity: 1.6, roughness: 0.4 }));
@@ -898,7 +914,7 @@ export class RemotePlayer {
     this.body.add(this.aim);
     this.light = new THREE.SpotLight(FLASH_COLOR, 0, 40, FLASH_ANGLE, 0.62, FLASH_DECAY);
     this.light.castShadow = false;
-    this.light.position.set(0.16, -0.08, -0.18);
+    this.light.position.set(0.16, -0.08, -0.7); // in front of the avatar so it never lights its own suit point-blank
     this.light.target.position.set(0.0, -0.1, -10);
     this.aim.add(this.light); this.aim.add(this.light.target);
     this.cone = makeBeam(18, FLASH_ANGLE * 0.82, 0.3);
@@ -1029,13 +1045,13 @@ export class RemotePlayer {
 
       // flashlight
       const on = !!st.flashlight;
-      this._lightI = damp(this._lightI, on ? 150 : 0, 18, dt);
+      this._lightI = damp(this._lightI, on ? 100 : 0, 18, dt);
       this.light.intensity = this._lightI < 0.05 ? 0 : this._lightI;
       this.cone.visible = this._lightI > 2;
       const cu = this.cone.material.uniforms;
       this._coneT = ((this._coneT || 0) + dt) % 1000;
       cu.uTime.value = this._coneT;
-      cu.uIntensity.value = 0.024 * fogScatter(ctx.scene) * (this._lightI / 150);
+      cu.uIntensity.value = 0.012 * fogScatter(ctx.scene) * (this._lightI / 150);
 
       // name tag
       this._drawTag();

@@ -1,7 +1,7 @@
 // src/story/cutscenes.js — STORY. playCutscene(name, ctx) -> { promise, skip() }; buildMenuBackdrop(ctx).
 import * as THREE from 'three';
 import { CONFIG } from '../config.js';
-import { makeStars, makePerihelion, makeHarvester, makeBeam, makeCockpit, makeRocket, makeArk, makeWarpTunnel, makeEye, makeEarth, makeDarkPlanet, makeCloudLayer, glowTexture, sunTexture } from './props.js';
+import { makeStars, makePerihelion, makeHarvester, makeBeam, makeCockpit, makeRocket, makeArk, makeWarpTunnel, makeEye, makeEarth, makeDarkPlanet, makeCloudLayer, glowTexture, sunTexture, makeNebula, makeFlare, makeDust } from './props.js';
 
 const CANCEL = Symbol('cutscene-cancel');
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -490,8 +490,17 @@ async function ending(run) {
   const sun = new THREE.Sprite(sunMat); sun.scale.setScalar(2600); root.add(sun);
   const sunDir = new THREE.Vector3(), look = new THREE.Vector3();
   const setSun = (el) => { const az = 0.2, e = el * Math.PI / 180; sunDir.set(Math.sin(az) * Math.cos(e), Math.sin(e), -Math.cos(az) * Math.cos(e)); sun.position.copy(camera.position).addScaledVector(sunDir, 12000); };
+  const flare = makeFlare({ color: 0xfff0d8, streak: 0x9ccfff, size: 1.1 }); root.add(flare.group);
+  const ec = new THREE.Vector3(), bias = new THREE.Vector3(0.5, 0.25, 0.5);
   let sT = 0;
-  run.on((dt, t) => { sT += dt; earth.update(t); stars.update(camera, t); setSun(lerp(-12, 1.5, smooth(sT / 30))); });
+  run.on((dt, t) => {
+    sT += dt; earth.update(t); stars.update(camera, t); setSun(lerp(-12, 1.5, smooth(sT / 30)));
+    // light Earth from the real sun (biased toward camera so the day side reads), flare only once the sun clears the limb
+    earth.sun.copy(sun.position).sub(earth.group.position).normalize().add(bias).normalize();
+    ec.copy(earth.group.position).sub(camera.position);
+    const vis = smooth((sunDir.angleTo(ec) - Math.asin(Math.min(1, 1030 / ec.length())) + 0.003) / 0.035);
+    flare.update(camera, sun.position, vis * 1.25, t);
+  });
   run.fov(42);
   run.shot((lt) => { camera.position.set(lt * 0.6, lt * 0.25, -lt * 2.2); look.set(90 + lt * 1.2, -30 + lt * 0.5, -1400); camera.lookAt(look); camera.up.set(Math.sin(0.06 + lt * 0.002), 1, 0).normalize(); });
   run.overlay.veil('#ffffff', 0, 3.5);
@@ -559,17 +568,22 @@ export function buildMenuBackdrop(ctx) {
   scene?.add(root);
   if (scene) { scene.background = new THREE.Color(0x000000); scene.fog = null; }
   if (camera) { camera.near = 0.5; camera.far = 30000; camera.fov = 60; camera.updateProjectionMatrix(); }
-  const stars = makeStars({ patchDir: PATCH, count: 7000, dark: 1.3 }); root.add(stars.points);
-  const planet = makeDarkPlanet(2400); planet.group.position.set(0, -2600, 0); root.add(planet.group);
+  const HDIR = new THREE.Vector3(0.66, 0.2, -1).normalize(); // Harvester sits off the title, in its own starless void
+  const nebula = makeNebula({ voidDir: HDIR, voidAngle: 0.13, intensity: 0.85 }); root.add(nebula.mesh);
+  const stars = makeStars({ patchDir: HDIR, patchAngle: 0.2, count: 7000, dark: 1.3 }); root.add(stars.points);
+  const planet = makeDarkPlanet(2400); planet.group.position.set(0, -2600, 0); planet.setScatter(1); root.add(planet.group);
   root.add(new THREE.AmbientLight(0x223040, 0.8));
   const rimL = new THREE.DirectionalLight(0x6fd0ff, 1.2); rimL.position.set(-0.5, 0.4, -1); root.add(rimL);
-  const harv = makeHarvester({ radial: 28, veins: 8 }); harv.group.position.copy(PATCH).multiplyScalar(3200); harv.group.lookAt(0, 0, 0); harv.group.rotateY(0.9); root.add(harv.group);
+  const sunL = new THREE.DirectionalLight(0xffd2a0, 1.6); root.add(sunL);
+  const harv = makeHarvester({ radial: 28, veins: 8, veinR: 5 }); harv.group.position.copy(HDIR).multiplyScalar(3200); harv.group.lookAt(0, 0, 0); harv.group.rotateY(0.9); root.add(harv.group);
   harv.setUnfold(0.55); harv.setVeins(0.12);
+  const flare = makeFlare({ color: 0xffe2b8, streak: 0x8cc8ff, size: 0.9 }); root.add(flare.group);
+  const dust = makeDust({ count: 220, opacity: 0.45 }); root.add(dust.points);
   const flashTex = glowTexture('rgba(255,255,255,1)', 'rgba(170,220,255,0.4)');
   const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, color: 0xbfe6ff, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
   flash.scale.setScalar(300); root.add(flash);
   let t = 0, nextPulse = 4, pulse = 0, nextFlash = 9, fl = 0, disposed = false;
-  const look = new THREE.Vector3(), tv = new THREE.Vector3();
+  const look = new THREE.Vector3(), tv = new THREE.Vector3(), sunDir = new THREE.Vector3(), sunPos = new THREE.Vector3(), pc = new THREE.Vector3();
   return {
     update(dt) {
       if (disposed) return; // never drive the camera after dispose (a level may own it by then)
@@ -578,11 +592,25 @@ export function buildMenuBackdrop(ctx) {
         const a = t * 0.012;
         if (camera) {
           camera.position.set(Math.sin(a) * 60, 40 + Math.sin(t * 0.05) * 4, Math.cos(a) * 60);
-          look.set(Math.sin(a * 0.6 + 0.25) * 1000, -60, -1000); camera.lookAt(look);
+          look.set(250 + Math.sin(t * 0.011) * 200, -70 + Math.sin(t * 0.017) * 18, -1000); camera.lookAt(look);
+          camera.rotateZ(Math.sin(t * 0.07) * 0.008);
         }
+        // slow sunrise over the limb: forward-scattered rim, warm key on the Harvester, flare once it clears the planet
+        const el = THREE.MathUtils.degToRad(-22.5 + 1.3 * smooth(t / 40) + 0.25 * Math.sin(t * 0.05)), az = THREE.MathUtils.degToRad(36);
+        sunDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+        if (camera) {
+          sunPos.copy(camera.position).addScaledVector(sunDir, 9000);
+          planet.sun.copy(sunPos).sub(planet.group.position).normalize();
+          sunL.position.copy(sunDir).multiplyScalar(100);
+          pc.copy(planet.group.position).sub(camera.position);
+          const vis = smooth((sunDir.angleTo(pc) - Math.asin(Math.min(1, 2412 / pc.length())) + 0.012) / 0.03);
+          planet.setScatter(0.75 + 0.5 * vis);
+          flare.update(camera, sunPos, vis * (0.9 + 0.1 * Math.sin(t * 0.4)), t);
+        }
+        nebula.update(camera); dust.update(camera, t);
         stars.update(camera, t); harv.update(dt);
         nextPulse -= dt; if (nextPulse < 0) { pulse = 1; nextPulse = 6 + Math.random() * 7; }
-        pulse = Math.max(0, pulse - dt * 0.6); harv.setVeins(0.12 + Math.sin(pulse * Math.PI) * 0.7);
+        pulse = Math.max(0, pulse - dt * 0.45); harv.setVeins(0.18 + Math.sin(pulse * Math.PI) * 0.9);
         nextFlash -= dt;
         if (nextFlash < 0) { tv.randomDirection(); tv.y = Math.abs(tv.y) * 0.6 + 0.05; flash.position.copy(camera ? camera.position : tv).addScaledVector(tv.normalize(), 6000); fl = 1; nextFlash = 14 + Math.random() * 18; }
         fl = Math.max(0, fl - dt * 1.8); flash.material.opacity = fl * fl; flash.scale.setScalar(200 + (1 - fl) * 300);

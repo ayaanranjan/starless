@@ -402,10 +402,10 @@ export function makeCockpit() {
     m.position.set(-1.05 + i * 0.7, -0.2, -1.42); m.rotation.x = -0.75; group.add(m);
     screens.push({ g, tex, kind: i, mesh: m });
   }
-  const alarm = new THREE.PointLight(0xff1a10, 0, 0, 0); alarm.position.set(0, 1.0, 0.2); group.add(alarm);
+  const alarm = new THREE.PointLight(0xff1a10, 0, 9, 0); alarm.position.set(0, 1.0, 0.2); group.add(alarm);
   const bulbMat = new THREE.MeshBasicMaterial({ color: 0x330000 });
   const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), bulbMat); bulb.position.set(0, 1.25, 0.4); group.add(bulb);
-  const fill = new THREE.PointLight(0x6fa8ff, 1.2, 0, 0); fill.position.set(0, 0.1, -0.9); group.add(fill);
+  const fill = new THREE.PointLight(0x6fa8ff, 1.2, 7, 0); fill.position.set(0, 0.1, -0.9); group.add(fill);
   let t = 0, acc = 0, glitch = 0, alarmOn = false;
   return {
     group,
@@ -447,7 +447,7 @@ export function makeRocket() {
   });
   const flame = new THREE.Mesh(new THREE.ConeGeometry(1.1, 12, 16, 1, true).rotateX(Math.PI).translate(0, -7.2, 0), flameMat);
   group.add(flame);
-  const light = new THREE.PointLight(0xff9a40, 0, 0, 0); light.position.y = -4; group.add(light);
+  const light = new THREE.PointLight(0xff9a40, 0, 90, 0); light.position.y = -4; group.add(light); // cutoff: no orange ground from orbit
   let t = 0, thrust = 0;
   return {
     group, flame,
@@ -479,7 +479,7 @@ export function makeArk() {
   }
   const hangar = new THREE.Mesh(new THREE.CircleGeometry(60, 40), new THREE.MeshBasicMaterial({ color: 0x8dffb0, transparent: true, opacity: 0, side: THREE.DoubleSide }));
   hangar.rotation.x = Math.PI / 2; hangar.position.y = -56; group.add(hangar);
-  const light = new THREE.PointLight(0x5dff8a, 0, 0, 0); light.position.y = -120; group.add(light);
+  const light = new THREE.PointLight(0x5dff8a, 0, 650, 0); light.position.y = -120; group.add(light);
   return {
     group,
     setLights(v) { glow.opacity = v; hangar.material.opacity = v * 0.9; light.intensity = v * 2.5; m.emissiveIntensity = v * 0.6; },
@@ -598,30 +598,160 @@ export function makeEarth(R = 1000) {
 
 // ---------------------------------------------------------------- simple dark planet (menu / Vesper-from-orbit)
 export function makeDarkPlanet(R = 2400, rim = 0x3fd0c8, base = 0x0b1214) {
+  const sun = new THREE.Vector3(-0.3, 0.6, -0.75).normalize();
+  const scat = { value: 0 }; // forward-scattering strength (sunrise glow on the limb)
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uRim: { value: new THREE.Color(rim) }, uBase: { value: new THREE.Color(base) }, uSun: { value: new THREE.Vector3(-0.3, 0.6, -0.75).normalize() } },
+    uniforms: { uRim: { value: new THREE.Color(rim) }, uBase: { value: new THREE.Color(base) }, uSun: { value: sun }, uScat: scat },
     vertexShader: `varying vec3 vN; varying vec3 vW; varying vec3 vO; void main(){ vO = normal; vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: NOISE + `uniform vec3 uRim, uBase, uSun; varying vec3 vN; varying vec3 vW; varying vec3 vO;
-      void main(){ vec3 N = normalize(vN); vec3 V = normalize(cameraPosition - vW);
+    fragmentShader: NOISE + `uniform vec3 uRim, uBase, uSun; uniform float uScat; varying vec3 vN; varying vec3 vW; varying vec3 vO;
+      void main(){ vec3 N = normalize(vN); vec3 V = normalize(cameraPosition - vW); vec3 L = normalize(uSun);
         float bands = fbm3(vec3(normalize(vO).y * 14.0, normalize(vO).x * 2.0, normalize(vO).z * 2.0));
-        float ndl = max(dot(N, normalize(uSun)), 0.0);
+        float sdl = dot(N, L); float ndl = max(sdl, 0.0);
         vec3 c = uBase * (0.5 + bands) + uBase * 3.0 * ndl * bands;
         float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0);
-        c += uRim * fres * (0.25 + 0.9 * ndl);
+        float fwd = pow(max(dot(-V, L), 0.0), 18.0);
+        c += uRim * fres * (0.25 + 0.9 * ndl + 0.9 * uScat * fwd);
+        c += mix(uRim, vec3(1.0, 0.7, 0.45), 0.5) * smoothstep(0.18, 0.0, abs(sdl)) * fres * 0.35 * uScat;
         gl_FragColor = vec4(c, 1.0); }`,
   });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 64), mat);
   const atmoMat = new THREE.ShaderMaterial({
-    uniforms: { uRim: { value: new THREE.Color(rim) } },
+    uniforms: { uRim: { value: new THREE.Color(rim) }, uSun: { value: sun }, uScat: scat },
     vertexShader: `varying vec3 vN; varying vec3 vW; void main(){ vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform vec3 uRim; varying vec3 vN; varying vec3 vW;
-      void main(){ vec3 V = normalize(cameraPosition - vW); float f = dot(normalize(vN), V);
-        float g = smoothstep(0.0, -0.22, f) * smoothstep(-0.5, -0.2, f); gl_FragColor = vec4(uRim * g * 0.9, g * 0.9); }`,
+    fragmentShader: `uniform vec3 uRim, uSun; uniform float uScat; varying vec3 vN; varying vec3 vW;
+      void main(){ vec3 V = normalize(cameraPosition - vW); vec3 N = normalize(vN); vec3 L = normalize(uSun); float f = dot(N, V);
+        float g = smoothstep(0.0, -0.22, f) * smoothstep(-0.5, -0.2, f);
+        float thin = pow(g, 7.0);
+        float day = 0.45 + 0.55 * smoothstep(-0.4, 0.4, dot(N, L));
+        float fwd = pow(max(dot(-V, L), 0.0), 16.0) * uScat;
+        vec3 col = uRim * (g * 0.75 + thin * 1.3) * day + mix(uRim, vec3(1.0, 0.86, 0.62), 0.65) * (thin * 3.0 + g * 0.3) * fwd;
+        gl_FragColor = vec4(col, 1.0); }`,
     side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const atmo = new THREE.Mesh(new THREE.SphereGeometry(R * 1.03, 96, 64), atmoMat);
   const group = new THREE.Group(); group.add(mesh, atmo);
-  return { group };
+  return { group, sun, setScatter(v) { scat.value = v; } };
+}
+
+// ---------------------------------------------------------------- nebula sky (fbm evaluated per VERTEX: costs ~nothing per pixel)
+export function makeNebula(opts = {}) {
+  const R = opts.radius ?? 2800;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uA: { value: new THREE.Color(opts.colorA ?? 0x1d4f7a) }, uB: { value: new THREE.Color(opts.colorB ?? 0x56206e) }, uC: { value: new THREE.Color(opts.colorC ?? 0x16706a) },
+      uI: { value: opts.intensity ?? 1 }, uVoid: { value: (opts.voidDir || new THREE.Vector3(0.22, 0.14, -1)).clone().normalize() }, uVoidR: { value: opts.voidAngle ?? 0.3 },
+      uBand: { value: (opts.bandDir || new THREE.Vector3(0.35, 0.9, 0.25)).clone().normalize() },
+    },
+    vertexShader: NOISE + `uniform vec3 uA, uB, uC, uVoid, uBand; uniform float uI, uVoidR; varying vec3 vCol; varying vec3 vDir;
+      void main(){
+        vec3 p = normalize(position); vDir = p;
+        float band = exp(-pow(dot(p, uBand) * 2.6, 2.0));
+        vec3 q = p * 2.0;
+        vec3 w = vec3(fbm3(q + 1.7), fbm3(q + 9.2), fbm3(q + 4.4));
+        float n = fbm(q * 1.2 + w * 1.8);
+        float lanes = fbm3(p * 4.5 + w * 1.5);
+        float dens = smoothstep(0.36, 0.7, n) * (0.3 + 0.95 * band);
+        vec3 col = mix(uA, uB, smoothstep(0.32, 0.6, w.x));
+        col = mix(col, uC, smoothstep(0.42, 0.66, w.z) * 0.75);
+        col *= dens;
+        col += vec3(0.7, 0.78, 1.0) * band * smoothstep(0.35, 0.75, n) * 0.05;
+        col *= 1.0 - smoothstep(0.42, 0.62, lanes) * 0.8;
+        float vd = acos(clamp(dot(p, uVoid), -1.0, 1.0));
+        col *= 0.15 + 0.85 * smoothstep(uVoidR * 0.6, uVoidR * 1.2, vd);
+        col += mix(uB, uC, 0.5) * 0.45 * exp(-pow((vd - uVoidR * 1.15) / (uVoidR * 0.22), 2.0)) * (0.4 + n);
+        vCol = col * uI;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: NOISE + `varying vec3 vCol; varying vec3 vDir;
+      void main(){ float g = vnoise(vDir * 70.0); vec3 c = vCol * (0.8 + 0.4 * g);
+        c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+        gl_FragColor = vec4(max(c, 0.0), 1.0); }`,
+    side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 200, 110), mat);
+  mesh.frustumCulled = false; mesh.renderOrder = -20;
+  return { mesh, mat, update(cam) { if (cam) mesh.position.copy(cam.position); } };
+}
+
+// ---------------------------------------------------------------- lens flare (screen-space ghosts + anamorphic streak)
+function streakTexture() {
+  const W = 256, H = 32, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'); const img = g.createImageData(W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const u = (x + 0.5) / W * 2 - 1, v = (y + 0.5) / H * 2 - 1;
+    const a = Math.pow(Math.max(0, 1 - Math.abs(u)), 2.2) * Math.exp(-v * v * 22);
+    const i = (y * W + x) * 4; img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = Math.round(a * 255);
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function ringTexture() {
+  const S = 128, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d'); const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,0.05)'); gr.addColorStop(0.72, 'rgba(255,255,255,0.12)'); gr.addColorStop(0.86, 'rgba(255,255,255,0.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+export function makeFlare(opts = {}) {
+  const group = new THREE.Group(); group.name = 'flare';
+  const col = new THREE.Color(opts.color ?? 0xffe0b0);
+  const glow = glowTexture('rgba(255,255,255,1)', 'rgba(255,255,255,0.25)', 128), streakT = streakTexture(), ringT = ringTexture();
+  const mk = (map, c, op) => {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map, color: c, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, opacity: op, fog: false }));
+    s.renderOrder = 60; s.frustumCulled = false; group.add(s); s.userData.op = op; return s;
+  };
+  const core = mk(glow, col, 1.0), halo = mk(glow, col.clone().multiplyScalar(0.45), 0.55);
+  const streak = mk(streakT, new THREE.Color(opts.streak ?? 0x86c4ff), 0.85), streak2 = mk(streakT, col, 0.6);
+  const ghosts = [[0.55, 0.05, 0x7fffd0, glow], [0.2, 0.025, 0xffa070, glow], [-0.35, 0.07, 0x6aa8ff, ringT], [-0.7, 0.035, 0xc89aff, glow], [-1.1, 0.12, 0x80e0ff, ringT]]
+    .map(([k, s, c, m]) => ({ k, s, sp: mk(m, new THREE.Color(c), 0.16) }));
+  const size = opts.size ?? 1, v = new THREE.Vector3(), D = 10;
+  const place = (sp, nx, ny, cam, tanX, tanY) => { sp.position.set(nx * tanX * D, ny * tanY * D, -D).applyMatrix4(cam.matrixWorld); };
+  return {
+    group,
+    // worldPos: the light; intensity 0..n (caller folds in occlusion). Call AFTER the camera has been placed this frame.
+    update(cam, worldPos, intensity = 1, time = 0) {
+      if (!cam) return;
+      cam.updateMatrixWorld();
+      v.copy(worldPos).project(cam);
+      const onScreen = v.z < 1 && Math.abs(v.x) < 1.4 && Math.abs(v.y) < 1.4;
+      const edge = 1 - Math.min(1, Math.max(0, Math.max(Math.abs(v.x), Math.abs(v.y)) - 0.9) / 0.5);
+      const I = onScreen ? Math.max(0, intensity) * edge : 0;
+      group.visible = I > 0.002;
+      if (!group.visible) return;
+      const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2), tanX = tanY * (cam.aspect || 1.7);
+      const H = 2 * tanY * D, flick = 0.94 + 0.06 * Math.sin(time * 13.7) * Math.sin(time * 5.3);
+      place(core, v.x, v.y, cam, tanX, tanY); core.scale.setScalar(H * 0.16 * size * (0.6 + 0.4 * Math.min(1, I))); core.material.opacity = Math.min(1, I) * flick;
+      place(halo, v.x, v.y, cam, tanX, tanY); halo.scale.setScalar(H * 0.55 * size); halo.material.opacity = halo.userData.op * Math.min(1, I);
+      place(streak, v.x, v.y, cam, tanX, tanY); streak.scale.set(H * 2.6 * size * (0.7 + 0.3 * Math.min(1, I)), H * 0.035 * size, 1); streak.material.opacity = streak.userData.op * Math.min(1.2, I) * flick;
+      place(streak2, v.x, v.y, cam, tanX, tanY); streak2.scale.set(H * 0.9 * size, H * 0.012 * size, 1); streak2.material.opacity = streak2.userData.op * Math.min(1, I);
+      const centered = 1 - Math.min(1, Math.hypot(v.x, v.y) / 1.6);
+      for (const g of ghosts) { place(g.sp, v.x * g.k, v.y * g.k, cam, tanX, tanY); g.sp.scale.setScalar(H * g.s * 2 * size); g.sp.material.opacity = g.sp.userData.op * Math.min(1, I) * (0.35 + 0.65 * centered); }
+    },
+  };
+}
+
+// ---------------------------------------------------------------- drifting dust motes around the camera (wraps in a box)
+export function makeDust(opts = {}) {
+  const N = opts.count ?? 260, B = opts.box ?? 120;
+  const pos = new Float32Array(N * 3), seed = new Float32Array(N);
+  for (let i = 0; i < N; i++) { pos[i * 3] = (Math.random() - 0.5) * B; pos[i * 3 + 1] = (Math.random() - 0.5) * B; pos[i * 3 + 2] = (Math.random() - 0.5) * B; seed[i] = Math.random(); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uCam: { value: new THREE.Vector3() }, uBox: { value: B }, uPix: { value: pixRatio() }, uColor: { value: new THREE.Color(opts.color ?? 0x9fc8d8) }, uOpacity: { value: opts.opacity ?? 0.5 } },
+    vertexShader: `attribute float aSeed; uniform float uTime, uBox, uPix; uniform vec3 uCam; varying float vA;
+      void main(){
+        vec3 drift = vec3(sin(aSeed * 40.0 + uTime * 0.05), cos(aSeed * 23.0 + uTime * 0.04) * 0.6 - 0.3, sin(aSeed * 17.0 + uTime * 0.03)) * uTime * 0.6;
+        vec3 p = mod(position + drift - uCam + uBox * 0.5, uBox) - uBox * 0.5 + uCam;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0); gl_Position = projectionMatrix * mv;
+        float d = -mv.z; vA = smoothstep(2.0, 8.0, d) * smoothstep(uBox * 0.5, uBox * 0.25, d) * (0.4 + 0.6 * fract(aSeed * 7.3));
+        gl_PointSize = clamp((1.2 + aSeed * 2.2) * uPix * 30.0 / max(d, 1.0), 1.0, 6.0);
+      }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uOpacity; varying float vA;
+      void main(){ vec2 d = gl_PointCoord - 0.5; float a = exp(-dot(d, d) * 14.0) * vA * uOpacity; if (a < 0.003) discard; gl_FragColor = vec4(uColor * a, a); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  const points = new THREE.Points(geo, mat); points.frustumCulled = false;
+  return { points, mat, update(cam, t) { mat.uniforms.uTime.value = t; if (cam) mat.uniforms.uCam.value.copy(cam.position); } };
 }
 
 // ---------------------------------------------------------------- soft particle layer
