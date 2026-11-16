@@ -1629,7 +1629,7 @@ async function boot() {
   // ---- go
   requestAnimationFrame((t) => { lastT = t; frame(t); });
   const bootEl = document.getElementById('boot');
-  if (bootEl) bootEl.classList.add('gone');
+  if (bootEl) { bootEl.classList.add('gone'); setTimeout(() => { bootEl.style.display = 'none'; }, 900); } // fade, then remove (transitions can stall in background tabs)
 
   // Warm the module cache in the background.
   getCutscenes();
