@@ -166,6 +166,13 @@ function dispose(g) {
   const i = voices.indexOf(g);
   if (i >= 0) voices.splice(i, 1);
 }
+// freeze a param at its current value (no snap-back when cancelling an in-flight ramp)
+function hold(p, t) {
+  if (p.cancelAndHoldAtTime) { try { p.cancelAndHoldAtTime(t); return; } catch (e) { /* fall back */ } }
+  const v = p.value;
+  p.cancelScheduledValues(t);
+  p.setValueAtTime(v, t);
+}
 function kill(g, fade) {
   if (!g || g.dead) return;
   g.dead = true;
@@ -176,9 +183,7 @@ function kill(g, fade) {
   for (const node of g.fades || [g.out]) {
     try {
       const p = node.gain;
-      const v = p.value;
-      p.cancelScheduledValues(t);
-      p.setValueAtTime(v, t);
+      hold(p, t);
       p.linearRampToValueAtTime(0, t + f);
     } catch (e) { /* ignore */ }
   }
@@ -245,7 +250,7 @@ function syllables(e, fs, t, p, k, vmax) {
 function beat(g, t, p, v, x) {
   const gap = 0.27 - 0.09 * (x || 0);
   thump(g, t, 68 * p, 36 * p, 0.17, 0.9 * v);
-  tone(g, t, 'triangle', 130 * p, 0.004, 0.09, 0.24 * v, 70 * p);
+  tone(g, t, 'triangle', 130 * p, 0.004, 0.09, 0.4 * v, 70 * p);
   burst(g, t, 'brown', 'lowpass', 180, 0.9, 0.004, 0.08, 0.5 * v);
   thump(g, t + gap, 60 * p, 33 * p, 0.2, 0.6 * v);
   tone(g, t + gap, 'triangle', 115 * p, 0.004, 0.1, 0.16 * v, 60 * p);
@@ -293,7 +298,7 @@ const SFX = {
     const k = 3 + ((Math.random() * 3) | 0);
     for (let i = 0; i < k; i++) {
       const d = rnd(0.012, 0.028);
-      e.gain.setValueAtTime(rnd(0.35, 0.75) * (1 - i / (k + 1)), tt);
+      e.gain.setValueAtTime(rnd(0.8, 1.6) * (1 - i / (k + 1)), tt);
       e.gain.exponentialRampToValueAtTime(0.001, tt + d);
       tt += d + rnd(0.002, 0.016);
     }
@@ -308,17 +313,17 @@ const SFX = {
     return 0.4;
   },
   jump(g, t, p) {
-    const fl = burst(g, t, 'pink', 'bandpass', 900 * p, 1.2, 0.03, 0.18, 0.22);
+    const fl = burst(g, t, 'pink', 'bandpass', 900 * p, 1.2, 0.03, 0.18, 0.8);
     fl.frequency.setValueAtTime(600 * p, t);
     fl.frequency.exponentialRampToValueAtTime(1800 * p, t + 0.2);
-    burst(g, t, 'brown', 'bandpass', 520 * p, 3, 0.02, 0.14, 0.14);
+    burst(g, t, 'brown', 'bandpass', 520 * p, 3, 0.02, 0.14, 0.5);
     return 0.3;
   },
   land(g, t, p) {
     thump(g, t, 95 * p, 38 * p, 0.22, 0.6);
     tone(g, t, 'triangle', 150 * p, 0.003, 0.08, 0.18, 70 * p);
     burst(g, t, 'brown', 'lowpass', 500 * p, 0.7, 0.003, 0.18, 0.5);
-    burst(g, t, 'pink', 'bandpass', 1100 * p, 0.8, 0.002, 0.08, 0.25);
+    burst(g, t, 'pink', 'bandpass', 1100 * p, 0.8, 0.002, 0.08, 0.6);
     return 0.4;
   },
   pickup(g, t, p) {
@@ -352,9 +357,9 @@ const SFX = {
     n.connect(hp); hp.connect(f1); hp.connect(f2); f1.connect(e); f2.connect(e); e.connect(g.out);
     const G = e.gain;
     G.setValueAtTime(0, t);
-    G.linearRampToValueAtTime(0.28, t + 0.7);
-    G.linearRampToValueAtTime(0.02, t + 0.95);
-    G.linearRampToValueAtTime(0.4, t + 1.15);
+    G.linearRampToValueAtTime(0.85, t + 0.7);
+    G.linearRampToValueAtTime(0.06, t + 0.95);
+    G.linearRampToValueAtTime(1.2, t + 1.15);
     G.exponentialRampToValueAtTime(0.001, t + 2.1);
     f1.frequency.setValueAtTime(1100 * p, t);
     f1.frequency.linearRampToValueAtTime(1400 * p, t + 0.9);
@@ -402,8 +407,8 @@ const SFX = {
     bp.frequency.exponentialRampToValueAtTime(3000 * p, t + 0.25);
     bp.frequency.exponentialRampToValueAtTime(900 * p, t + 1.35);
     e.gain.setValueAtTime(0, t);
-    e.gain.linearRampToValueAtTime(0.32, t + 0.05);
-    e.gain.exponentialRampToValueAtTime(0.18, t + 0.5);
+    e.gain.linearRampToValueAtTime(0.45, t + 0.05);
+    e.gain.exponentialRampToValueAtTime(0.26, t + 0.5);
     e.gain.exponentialRampToValueAtTime(0.0001, t + 1.45);
     const fl = burst(g, t, 'white', 'highpass', 3000 * p, 0.7, 0.03, 1.1, 0.14);
     fl.frequency.setValueAtTime(2500 * p, t);
@@ -432,8 +437,8 @@ const SFX = {
     f2.frequency.setValueAtTime(820 * p, t);
     f2.frequency.linearRampToValueAtTime(600 * p, t + D);
     e.gain.setValueAtTime(0, t);
-    e.gain.linearRampToValueAtTime(0.7, t + 0.15);
-    e.gain.linearRampToValueAtTime(0.5, t + D * 0.7);
+    e.gain.linearRampToValueAtTime(1.8, t + 0.15);
+    e.gain.linearRampToValueAtTime(1.3, t + D * 0.7);
     e.gain.exponentialRampToValueAtTime(0.0001, t + D);
     return D + 0.2;
   },
@@ -446,7 +451,7 @@ const SFX = {
     const k = 7 + ((Math.random() * 11) | 0);
     let tt = t;
     for (let i = 0; i < k; i++) {
-      const v = rnd(0.55, 1);
+      const v = rnd(2.2, 4);
       e.gain.setValueAtTime(v, tt);
       e.gain.exponentialRampToValueAtTime(0.001, tt + 0.005);
       e2.gain.setValueAtTime(v * 1.6, tt);
@@ -504,7 +509,7 @@ const SFX = {
     bp.frequency.setValueAtTime(180 * p, t);
     bp.frequency.exponentialRampToValueAtTime(7000 * p, t + 2.2);
     e.gain.setValueAtTime(0, t);
-    e.gain.linearRampToValueAtTime(0.55, t + 2.15);
+    e.gain.linearRampToValueAtTime(1.2, t + 2.15);
     e.gain.exponentialRampToValueAtTime(0.0001, t + 2.7);
     const lp = flt(g, 'lowpass', 1800, 2);
     lp.connect(g.out);
@@ -654,8 +659,8 @@ const SFX = {
     const n = nz(g, 'brown', t, 1), ng = gn(g, 0.5);
     n.connect(ng); ng.connect(bp);
     e.gain.setValueAtTime(0, t);
-    e.gain.linearRampToValueAtTime(0.5, t + D * 0.4);
-    e.gain.linearRampToValueAtTime(0.32, t + D * 0.8);
+    e.gain.linearRampToValueAtTime(1.4, t + D * 0.4);
+    e.gain.linearRampToValueAtTime(0.9, t + D * 0.8);
     e.gain.exponentialRampToValueAtTime(0.0001, t + D);
     return D + 0.3;
   },
@@ -667,7 +672,7 @@ const SFX = {
     const b1 = flt(g, 'bandpass', rnd(700, 1400) * p, 14), b2 = flt(g, 'bandpass', rnd(1800, 2600) * p, 12), e = gn(g, 0);
     o.connect(b1); o.connect(b2); b1.connect(e); b2.connect(e); e.connect(g.out);
     e.gain.setValueAtTime(0, t);
-    e.gain.linearRampToValueAtTime(0.5, t + D * 0.3);
+    e.gain.linearRampToValueAtTime(3.0, t + D * 0.3);
     e.gain.linearRampToValueAtTime(0.0001, t + D);
     return D + 0.1;
   },
@@ -776,8 +781,8 @@ const LOOPS = {
     const t = ac.currentTime;
     const n = nz(L, 'brown', t, rnd(0.9, 1.1)), n2 = nz(L, 'pink', t, 1);
     const f1 = flt(L, 'bandpass', 520 * p, 2.2), f2 = flt(L, 'bandpass', 1500 * p, 3.5);
-    const wet = gn(L, 0.6), n2g = gn(L, 0.5), e = gn(L, 0);
-    const am = lfo(L, 22, 0.4, wet.gain, t);
+    const wet = gn(L, 2.2), n2g = gn(L, 1.5), e = gn(L, 0);
+    const am = lfo(L, 22, 1.4, wet.gain, t);
     n.connect(f1); n2.connect(n2g); n2g.connect(f2); f1.connect(wet); f2.connect(wet); wet.connect(e); e.connect(L.out);
     const s = osc(L, 'sawtooth', 48 * p, t), slp = flt(L, 'lowpass', 320, 1), sg = gn(L, 0);
     chain(s, slp, sg, L.out);
@@ -818,7 +823,7 @@ const LOOPS = {
       b2.frequency.setValueAtTime(rnd(1100, 2000) * p, t0);
       let tt = t0;
       for (let i = 0; i < k; i++) {
-        e.gain.setValueAtTime(rnd(0.4, 1), tt);
+        e.gain.setValueAtTime(rnd(1.2, 3), tt);
         e.gain.exponentialRampToValueAtTime(0.001, tt + 0.004);
         tt += rate * rnd(0.75, 1.3);
       }
@@ -828,7 +833,7 @@ const LOOPS = {
   },
   wraith_hum(L, p) {
     const t = ac.currentTime, base = 174.6 * p;
-    const lp = flt(L, 'lowpass', 1800, 0.7), hum = gn(L, 0.06);
+    const lp = flt(L, 'lowpass', 1800, 0.7), hum = gn(L, 0.12);
     lp.connect(hum); hum.connect(L.out);
     [[1, 1.0042], [1.5, 1.5063], [2.0, 2.011], [0.5, 0.5019], [2.67, 2.676]].forEach((pair, i) => {
       const v = i === 4 ? 0.25 : 1 / (1 + i * 0.3);
@@ -839,7 +844,7 @@ const LOOPS = {
     let last = 0;
     sched(L, rnd(0.3, 1.5), () => {
       const t0 = Math.max(ac.currentTime + 0.03, last + 0.02);
-      last = syllables(e, fs, t0, p * rnd(0.85, 1.15), 3 + ((Math.random() * 5) | 0), 0.5);
+      last = syllables(e, fs, t0, p * rnd(0.85, 1.15), 3 + ((Math.random() * 5) | 0), 1.0);
       return last - ac.currentTime + rnd(1.2, 4);
     });
   },
@@ -859,15 +864,15 @@ const LOOPS = {
     const o = osc(L, 'sawtooth', 700 * p, t), o2 = osc(L, 'square', 702 * p, t);
     const sw = osc(L, 'square', 1.25, t), sd = gn(L, 170 * p);
     sw.connect(sd); sd.connect(o.frequency); sd.connect(o2.frequency);
-    const lp = flt(L, 'lowpass', 2400, 1.2), e = gn(L, 0.08), o2g = gn(L, 0.4);
+    const lp = flt(L, 'lowpass', 2400, 1.2), e = gn(L, 0.12), o2g = gn(L, 0.4);
     o.connect(lp); o2.connect(o2g); o2g.connect(lp); lp.connect(e); e.connect(L.out);
   },
   wind(L, p) {
     const t = ac.currentTime;
-    const n = nz(L, 'pink', t, 1), bp = flt(L, 'bandpass', 700 * p, 4), g1 = gn(L, 0.45);
+    const n = nz(L, 'pink', t, 1), bp = flt(L, 'bandpass', 700 * p, 4), g1 = gn(L, 2.0);
     chain(n, bp, g1, L.out);
     lfo(L, 0.07, 350 * p, bp.frequency, t);
-    lfo(L, 0.17, 0.25, g1.gain, t);
+    lfo(L, 0.17, 1.0, g1.gain, t);
     const b = nz(L, 'brown', t, 1), bl = flt(L, 'lowpass', 260, 0.7), bg = gn(L, 0.3);
     chain(b, bl, bg, L.out);
   },
@@ -937,7 +942,7 @@ const LOOPS = {
   },
   steam(L, p) {
     const t = ac.currentTime;
-    const n = nz(L, 'white', t, 1), hp = flt(L, 'highpass', 1800 * p, 0.7), lp = flt(L, 'lowpass', 9000, 0.7), g1 = gn(L, 0.13);
+    const n = nz(L, 'white', t, 1), hp = flt(L, 'highpass', 1800 * p, 0.7), lp = flt(L, 'lowpass', 9000, 0.7), g1 = gn(L, 0.25);
     chain(n, hp, lp, g1, L.out);
     lfo(L, 9, 0.03, g1.gain, t);
     lfo(L, 0.3, 0.04, g1.gain, t);
@@ -980,7 +985,7 @@ const AMB = {
       if (i === 1) lfo(A, 0.031, 9, o.detune, t);
     });
     wet(A, dg, 0.3);
-    const sh = gn(A, 0.014);
+    const sh = gn(A, 0.022);
     sh.connect(A.out); wet(A, sh, 1.2);
     [1760, 2217.46, 2637, 3322.4, 4186].forEach((f) => {
       const o = osc(A, 'sine', f * rnd(0.998, 1.002), t), tg = gn(A, 0.5);
@@ -996,7 +1001,7 @@ const AMB = {
     const t = ac.currentTime;
     const gust = gn(A, 0.7);
     gust.connect(A.out); wet(A, gust, 0.2);
-    [['brown', 420, 5, 0.6], ['pink', 950, 7, 0.2]].forEach(([color, f, q, v]) => {
+    [['brown', 420, 5, 3.0], ['pink', 950, 7, 1.4]].forEach(([color, f, q, v]) => {
       const n = nz(A, color, t, rnd(0.9, 1.1)), bp = flt(A, 'bandpass', f, q), g1 = gn(A, v);
       chain(n, bp, g1, gust);
       sched(A, 0, () => {
@@ -1029,10 +1034,10 @@ const AMB = {
     [[52, 'sawtooth', 0.5], [52.4, 'sawtooth', 0.4], [104, 'sine', 0.5], [156, 'sine', 0.3], [208, 'sine', 0.2], [57, 'sine', 0.4]].forEach(([f, ty, v]) => {
       const o = osc(A, ty, f, t), og = gn(A, v); o.connect(og); og.connect(lp);
     });
-    const n = nz(A, 'brown', t, 1), nl = flt(A, 'lowpass', 320, 0.8), nb = flt(A, 'bandpass', 700, 2), sw = gn(A, 0.12), nbg = gn(A, 0.5);
+    const n = nz(A, 'brown', t, 1), nl = flt(A, 'lowpass', 320, 0.8), nb = flt(A, 'bandpass', 700, 2), sw = gn(A, 0.3), nbg = gn(A, 1.2);
     n.connect(nl); nl.connect(sw); n.connect(nb); nb.connect(nbg); nbg.connect(sw);
     sw.connect(A.out); wet(A, sw, 0.4);
-    lfo(A, 0.09, 0.115, sw.gain, t);
+    lfo(A, 0.09, 0.28, sw.gain, t);
     sched(A, rnd(3, 7), () => { shot(A, 'creak', { volume: rnd(0.15, 0.35), pitch: rnd(0.7, 1.2), _pan: rnd(-1, 1), _lp: 2500 }); return rnd(4, 11); });
     sched(A, rnd(1, 3), () => { shot(A, 'drip', { volume: rnd(0.15, 0.4), pitch: rnd(0.8, 1.3), _pan: rnd(-1, 1) }); return rnd(1.5, 6); });
     sched(A, rnd(6, 12), () => { shot(A, 'ping', { volume: rnd(0.08, 0.18), pitch: rnd(0.8, 1.2), _pan: rnd(-1, 1), _rev: 1.2 }); return rnd(7, 16); });
@@ -1045,10 +1050,12 @@ const AMB = {
     [[32.7, 'sine', 1], [49, 'sine', 0.6], [65.4, 'triangle', 0.25]].forEach(([f, ty, v]) => { const o = osc(A, ty, f, t), og = gn(A, v); o.connect(og); og.connect(sub); });
     lfo(A, 0.05, 0.1, sub.gain, t);
     // choir pad: detuned saws -> parallel formant bank
-    const pre = gn(A, 1), pad = gn(A, 0.05);
+    const pre = gn(A, 1), pad = gn(A, 0.7);
     const fs = [700, 1150, 2800].map((f, i) => { const b = flt(A, 'bandpass', f, 6 + i * 2), bg = gn(A, [1, 0.7, 0.4][i] * 2.5); pre.connect(b); b.connect(bg); bg.connect(pad); return b; });
     pad.connect(A.out); wet(A, pad, 0.9);
-    lfo(A, 0.06, 0.03, pad.gain, t);
+    lfo(A, 0.06, 0.3, pad.gain, t);
+    const body = flt(A, 'lowpass', 500, 0.7), bdg = gn(A, 0.12);
+    pre.connect(body); body.connect(bdg); bdg.connect(pad);
     const CH = [[130.81, 155.56, 185.0, 261.63], [123.47, 146.83, 174.61, 246.94], [138.59, 164.81, 196.0, 277.18], [116.54, 155.56, 185.0, 233.08]];
     const vox = [];
     CH[0].forEach((f) => {
@@ -1071,7 +1078,7 @@ const AMB = {
       fs.forEach((b, i) => b.frequency.setTargetAtTime(v[i], ac.currentTime, 1.5));
       return rnd(4, 9);
     });
-    const air = nz(A, 'white', t, 1), ab = flt(A, 'bandpass', 6000, 0.7), ag = gn(A, 0.012);
+    const air = nz(A, 'white', t, 1), ab = flt(A, 'bandpass', 6000, 0.7), ag = gn(A, 0.02);
     chain(air, ab, ag, A.out);
     lfo(A, 0.07, 0.01, ag.gain, t);
     sched(A, rnd(5, 9), () => { shot(A, 'rwhisper', { volume: rnd(0.15, 0.35), pitch: rnd(0.8, 1.2), _pan: rnd(-1, 1) }); return rnd(6, 14); });
@@ -1121,7 +1128,7 @@ function tensionTick() {
     st.tS += (st.tension - st.tS) * 0.06;
     if (Math.abs(st.tS - st.tension) < 0.001) st.tS = st.tension;
     const x = st.tS;
-    const cv = 0.14 * x * x;
+    const cv = 0.9 * x * x;
     if (Math.abs(cv - st.lastCg) > 0.0015) { S.cg.gain.setTargetAtTime(cv, now, 0.15); st.lastCg = cv; }
     const w = x > 0.8 ? (x - 0.8) / 0.2 : 0;
     const tv = 0.018 * w * w;
@@ -1216,8 +1223,7 @@ function applyMuffle() {
 }
 function duck() {
   const p = S.duck.gain, t = ac.currentTime;
-  p.cancelScheduledValues(t);
-  p.setValueAtTime(p.value, t);
+  hold(p, t);
   p.linearRampToValueAtTime(0.15, t + 0.04);
   p.setTargetAtTime(0.9, t + 0.9, 0.9);
 }
@@ -1272,7 +1278,7 @@ function loopInternal(name, opts) {
       try {
         if (stopped || !ac) return;
         const p = L.out.gain, now = ac.currentTime;
-        p.cancelScheduledValues(now);
+        hold(p, now);
         p.setTargetAtTime(clamp(num(v, 1), 0, 4), now, 0.08);
       } catch (e) { /* ignore */ }
     },
@@ -1312,7 +1318,7 @@ function speakInternal(sec) {
   chain(n, hp, bp, e, g.out);
   let tt = t + 0.12;
   e.gain.setValueAtTime(0, t);
-  while (tt < t + D) { e.gain.setValueAtTime(rnd(0.015, 0.05), tt); tt += rnd(0.03, 0.12); }
+  while (tt < t + D) { e.gain.setValueAtTime(rnd(0.08, 0.2), tt); tt += rnd(0.03, 0.12); }
   e.gain.setValueAtTime(0, t + D);
   // faint garbled carrier under the static (reads as distant voice)
   const lp = flt(g, 'lowpass', 3000, 0.7), vg = gn(g, 0.35);
@@ -1332,7 +1338,7 @@ export const audio = {
       if (!ac) {
         const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
         if (!AC) { warn('noac', 'Web Audio not supported'); return; }
-        ac = new AC({ latencyHint: 'interactive' });
+        try { ac = new AC({ latencyHint: 'interactive' }); } catch (e) { ac = new AC(); }
         try { build(); } catch (e) { warn('build', 'audio graph build failed: ' + (e && e.message)); try { ac.close(); } catch (e2) { /* ignore */ } ac = null; for (const k in S) delete S[k]; return; }
         const resume = () => { if (ac && ac.state !== 'running' && ac.state !== 'closed') ac.resume().catch(() => {}); };
         ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => window.addEventListener(ev, resume, { capture: true, passive: true }));

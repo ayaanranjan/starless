@@ -176,10 +176,9 @@ export class Wraith extends CreatureBase {
     const sh = this.shudder + (st === 'stunned' ? 1 : 0);
     const flick = sh > 0 ? (Math.random() < 0.4 ? 0.4 : 1) : 1;
     const spd = clamp(this.animSpeed, 0, 4);
-    for (const m of [this.shroudMat, this.tendrilMat]) {
-      m.uniforms.uTime.value = t;
-      m.uniforms.uFade.value = this.fade * flick;
-    }
+    const su = this.shroudMat.uniforms, tu = this.tendrilMat.uniforms;
+    su.uTime.value = t; tu.uTime.value = t;
+    su.uFade.value = this.fade * flick; tu.uFade.value = this.fade * flick;
     this.shroudMat.uniforms.uAmp.value = 0.8 + spd * 0.35 + sh * 1.5;
     this.tendrilMat.uniforms.uAmp.value = 1.6 + spd * 0.4 + sh * 2;
     this.coreMat.opacity = 0.9 * this.fade * flick;

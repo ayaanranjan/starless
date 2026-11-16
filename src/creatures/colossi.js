@@ -134,7 +134,7 @@ function buildWatcherShared() {
   const tex = eyeTexture();
   const eye = new THREE.MeshBasicMaterial({ map: tex, fog: false });
   const flesh = new THREE.MeshStandardMaterial({ color: 0x0b0710, roughness: 0.45, metalness: 0.1, emissive: 0x1d0a33, emissiveIntensity: 0.6, fog: false });
-  const core = new THREE.IcosahedronGeometry(1, 3);
+  const core = new THREE.SphereGeometry(1, 32, 24);
   const pos = core.attributes.position, v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); const k = 1 + Math.sin(v.x * 5.1) * 0.08 + Math.sin(v.y * 6.3 + v.z * 3.1) * 0.07; v.multiplyScalar(k); pos.setXYZ(i, v.x, v.y, v.z); }
   core.computeVertexNormals();
@@ -189,6 +189,7 @@ export class Watcher extends CreatureBase {
     this.object.updateMatrixWorld(true);
   }
   enrage(on = true) { this.enraged = !!on; }
+  disposeOwn() { try { this.eyeMesh.dispose(); } catch (e) { /* ignore */ } }
   getNetState() { return [this.enraged ? 1 : 0]; }
   setNetState(a) { if (Array.isArray(a) && a.length) this.enraged = a[0] === 1; }
   hearNoise() {}

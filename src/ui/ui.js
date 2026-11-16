@@ -218,7 +218,7 @@ function buildOverlays() {
   E.lock = h('div', 'sl-lock', null, R);
   const lc = h('div', 'sl-lock-c', null, E.lock);
   h('div', 'sl-lock-t', 'CLICK TO ENTER THE DARK', lc);
-  h('div', 'sl-lock-s', 'mouse look is released', lc);
+  h('div', 'sl-lock-s', 'Esc to pause', lc);
   E.lock.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); emit('lock'); });
 
   E.fade = h('div', 'sl-fade', null, R);
@@ -353,8 +353,10 @@ function buildLobby() {
     E.lStart.disabled = true;
     clearTimeout(startLockT);
     startLockT = setTimeout(() => { E.lStart.disabled = false; }, 2000);
-    if (selChapter === -1) emit('continue');
-    else emit('start', { levelIndex: selChapter });
+    if (selChapter === -1) {
+      const n = clamp(Math.floor(num(lobby.unlocked, 1)), 1, CHAPTERS.length);
+      emit('start', { levelIndex: clamp(Math.floor(num(lobby.saveLevelIndex, n - 1)), 0, CHAPTERS.length - 1), continue: true });
+    } else emit('start', { levelIndex: selChapter });
   }, 'primary', row);
   button('LEAVE', () => emit('leave'), 'ghost', row);
   E.lStatus = h('div', 'sl-status', '', p);
@@ -763,6 +765,7 @@ function showScreen(name, data) {
   try {
     switch (name) {
       case 'menu':
+        if (prev !== 'menu' && prev !== 'settings' && prev !== 'join') resetSession();
         E.mContinue.style.display = d && (d.hasSave || d.canContinue) ? '' : 'none';
         renumber(E.mNav);
         break;
@@ -779,7 +782,7 @@ function showScreen(name, data) {
         syncSettingsUI();
         break;
       case 'loading':
-        if (prev !== 'loading') startFlavor();
+        if (prev !== 'loading') { startFlavor(); if (data === undefined) applyLoading('LOADING', undefined); }
         if (d && typeof d === 'object' && data !== undefined) applyLoading(d.text, d.progress != null ? d.progress : d.p);
         else if (typeof data === 'string') applyLoading(data, undefined);
         break;
@@ -799,6 +802,18 @@ function showScreen(name, data) {
     }
   } catch (e) { console.error('[ui] showScreen', name, e); }
 }
+// Clear per-session HUD/cinematic leftovers (e.g. after quitting mid-level or a skipped cutscene).
+function resetSession() {
+  R.classList.remove('letterbox', 'skiphint', 'downed', 'lowhp', 'chatting');
+  setObjective(null);
+  setPrompt(null);
+  setTeam([]);
+  clearSubs();
+  E.chatLog.textContent = '';
+  E.downT.textContent = '';
+  vig = 0;
+  for (const k in E.v) E.v[k].last = -1;
+}
 function applyLoading(text, p) {
   if (text != null) E.loadText.textContent = String(text);
   const pv = Number(p);
@@ -814,7 +829,7 @@ function applyLoading(text, p) {
 function setLobby(d) {
   ensure();
   if (!d || typeof d !== 'object') return;
-  for (const k of ['code', 'players', 'isHost', 'unlocked', 'status', 'hasSave', 'canContinue']) if (k in d) lobby[k] = d[k];
+  for (const k of ['code', 'players', 'isHost', 'unlocked', 'status', 'hasSave', 'canContinue', 'saveLevelIndex']) if (k in d) lobby[k] = d[k];
   if ('levelIndex' in d && Number.isFinite(Number(d.levelIndex))) selChapter = Number(d.levelIndex) | 0;
   renderLobby();
   if ('status' in d) {
@@ -824,10 +839,11 @@ function setLobby(d) {
 }
 
 // ---- cinematic ----
-let cardT1 = 0, cardT2 = 0;
+let cardT1 = 0, cardT2 = 0, cardResolve = null;
 function chapterCard(title, subtitle) {
   ensure();
   clearTimeout(cardT1); clearTimeout(cardT2);
+  if (cardResolve) { const r = cardResolve; cardResolve = null; r(); }
   const card = E.card;
   card.textContent = '';
   card.classList.remove('on', 'out');
@@ -844,9 +860,14 @@ function chapterCard(title, subtitle) {
   const reveal = 0.2 + chars.length * 0.075 + 1.4;
   const hold = reveal + 4;
   return new Promise((resolve) => {
+    cardResolve = resolve;
     cardT1 = setTimeout(() => {
       card.classList.add('out');
-      cardT2 = setTimeout(() => { card.classList.remove('on', 'out'); card.textContent = ''; resolve(); }, 1500);
+      cardT2 = setTimeout(() => {
+        card.classList.remove('on', 'out'); card.textContent = '';
+        if (cardResolve === resolve) cardResolve = null;
+        resolve();
+      }, 1500);
     }, hold * 1000);
   });
 }

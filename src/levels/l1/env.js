@@ -218,7 +218,7 @@ export function buildSky(camera, fogColor) {
   const group = new THREE.Group();
   group.name = 'l1_sky';
   const far = camera?.far || 1000;
-  const R = Math.min(430, far * 0.72);
+  const R = Math.min(430, far * 0.45);
   const pr = R * 0.4;
   const dir = new THREE.Vector3(0.5, 0.42, -0.76).normalize();
   const sun = new THREE.Vector3(-0.8, 0.35, 0.45).normalize();

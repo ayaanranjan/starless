@@ -145,6 +145,7 @@ export class CreatureBase {
     this.vel = new THREE.Vector3();
     this.radius = 0.45; this.height = 2.2; this.gravity = opts.gravity ?? -18;
     this.aggr = opts.aggression ?? 1;
+    this.cullDist = opts.cullDist ?? ({ stalker: 85, crawler: 70, mimic: 90, wraith: 80 }[type] || 0);
     this.netPos = this.position.clone(); this.netYaw = this.yaw; this.hasNet = false;
     this.animSpeed = 0; this._prev = this.position.clone();
     this.t = Math.random() * 100;
@@ -193,6 +194,11 @@ export class CreatureBase {
     }
     try { this.animate(dt); } catch (e) { this._warn(e); }
     this.object.rotation.y = this.yaw;
+    // distance cull: far creatures are fogged out anyway, skip their draw calls
+    if (this.cullDist > 0 && this.object.visible) {
+      const cam = this.ctx.camera?.position;
+      if (cam && cam.distanceToSquared(this.position) > this.cullDist * this.cullDist) this.object.visible = false;
+    }
     this.updateAudio(dt);
   }
 
@@ -231,7 +237,12 @@ export class CreatureBase {
   startLoop(name, volume = 0.6) { this.loopName = name; this.loopVol = volume; this._tryLoop(); }
   _tryLoop() {
     if (this.loop || !this.loopName) return;
-    try { this.loop = this.ctx.audio?.loop?.(this.loopName, { position: this.position, volume: this.loopVol }) || null; } catch (e) { this.loop = null; }
+    try {
+      const h = this.ctx.audio?.loop?.(this.loopName, { position: this.position, volume: this.loopVol }) || null;
+      // audio not initialised yet -> module hands back an inert singleton; retry later
+      if (h && typeof h.setPosition === 'function' && String(h.setPosition).replace(/\s/g, '').length <= 16) { this.loop = null; return; }
+      this.loop = h;
+    } catch (e) { this.loop = null; }
   }
   loopVolume() { return this.hidden ? 0 : this.loopVol; }
   updateAudio(dt) {

@@ -103,9 +103,16 @@ export class Mimic extends CreatureBase {
     _p.set(this.position.x, this.position.y + 1.3, this.position.z);
     switch (this.state) {
       case 'idle': {
-        this.vel.x = 0; this.vel.z = 0; this.physics(dt);
+        const near = this.stateTime < 0.8 ? null : this.nearestPlayer(Infinity);
+        // when nobody is looking its way, it drifts closer (never seen moving)
+        let creep = false;
+        if (near && this.aggr >= 0.5 && near.position.distanceTo(this.position) > 9) {
+          creep = true;
+          for (const p of this.ctx.players.values()) { if (validTarget(p) && lookAngle(p, _p) < 1.35) { creep = false; break; } }
+        }
+        if (creep) this.moveToward(near.position.x, near.position.z, 0.8 * this.aggr, dt, 2);
+        else { this.vel.x = 0; this.vel.z = 0; this.physics(dt); }
         if (this.stateTime < 0.8) break; // fading in
-        const near = this.nearestPlayer(Infinity);
         this.target = near;
         if (this.litByAny(_p)) { this.vanish(); break; }
         if (near && near.position.distanceTo(this.position) < 6) { this.vanish(); break; }

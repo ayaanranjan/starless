@@ -425,10 +425,8 @@ function onPeerLeave(id) {
     broadcastLobby();
     refreshLobbyUI();
     notify(r.callsign + ' lost signal', 3);
-  } else if (!hostId || id === hostId || (rosterEntry(id) && rosterEntry(id).isHost)) {
-    hostLeft();
   } else {
-    // another client dropped; the host's next lobby broadcast reconciles the roster
+    hostLeft(); // net.js only reports the host to clients
   }
 }
 
@@ -491,7 +489,7 @@ function goMenu(note) {
   setupLocal('solo', myName());
   setState('menu');
   ctx.paused = false;
-  chatOpen = false; ctx.chatOpen = false;
+  forceCloseChat();
   safe('input', () => { input.enabled = true; });
   unlockPointer();
   resetHud();
@@ -754,6 +752,7 @@ async function playCut(name, my) {
   if (my !== flow) return;
   if (!mod || typeof mod.playCutscene !== 'function') return;
   ctx.cinematic = true;
+  skipShown = 0;
   if (ctx.isHost) safe('ui.skipHint', () => ui.skipHint && ui.skipHint(true));
   let resolveSkip = null;
   const skipP = new Promise((r) => { resolveSkip = r; });
@@ -818,7 +817,7 @@ async function loadLevel(li, save, seed, my) {
   disposeBackdrop();
   teardownWorld();
   completing = false; overSent = false; overPending = 0;
-  chatOpen = false; ctx.chatOpen = false;
+  forceCloseChat();
   levelIndex = li; ctx.levelIndex = li;
   levelSeed = seed >>> 0; ctx.seed = levelSeed;
   ctx.rng = mulberry32((levelSeed + li * 7919) >>> 0);
@@ -1056,7 +1055,7 @@ function showGameOver() {
   if (state !== 'playing' && state !== 'paused') return;
   setState('gameover');
   ctx.paused = false;
-  chatOpen = false; ctx.chatOpen = false;
+  forceCloseChat();
   safe('input', () => { input.enabled = false; });
   unlockPointer();
   showLockHint(false);
@@ -1130,9 +1129,15 @@ function openChat() {
   safe('input', () => { input.enabled = false; });
   safe('ui.openChat', () => ui.openChat && ui.openChat());
 }
+function forceCloseChat() {
+  if (!chatOpen) return;
+  chatOpen = false;
+  if (ctx) ctx.chatOpen = false;
+  safe('ui.closeChat', () => ui.closeChat && ui.closeChat());
+}
 function closeChat() {
   if (!chatOpen) return;
-  chatOpen = false; ctx.chatOpen = false;
+  forceCloseChat();
   if (state === 'playing') safe('input', () => { input.enabled = true; });
 }
 function sendChat(text) {
@@ -1204,8 +1209,8 @@ function onAction(action, payload) {
       break;
     }
     case 'continue':
-      if (state === 'lobby' && mp && ctx.isHost) hostStart({ continue: true });
-      else if (state === 'menu' || state === 'lobby') startSolo({ continue: true });
+      if (state === 'lobby' && mp) { if (ctx.isHost) hostStart({ continue: true }); else notify('Only the host can launch.', 3); }
+      else if (state === 'menu') startSolo({ continue: true });
       break;
     case 'host': if (state === 'menu' || state === 'lobby') hostGame(payload); break;
     case 'join': if (state === 'menu' || state === 'lobby') joinGame(payload); break;
@@ -1343,7 +1348,11 @@ function tick(dt, now) {
     audio.setListener && audio.setListener(_lp, _lf);
   } catch (e) { reportError('audio.setListener', e); }
 
-  if (chatOpen && now - chatOpenedAt > 400 && !isTyping(document.activeElement)) closeChat();
+  if (chatOpen && now - chatOpenedAt > 250) {
+    let open = false;
+    try { open = typeof ui.isChatOpen === 'function' ? !!ui.isChatOpen() : isTyping(document.activeElement); } catch (e) { open = false; }
+    if (!open) closeChat();
+  }
   showLockHint(state === 'playing' && levelReady && !chatOpen && !isLocked());
 }
 

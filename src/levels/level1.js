@@ -139,7 +139,7 @@ export default class Level1 {
       const pts = route.map(([x, z]) => new THREE.Vector3(x, H(x, z), z));
       this._makeCreature('stalker', { position: pts[0].clone(), patrol: pts });
     });
-    this._makeCreature('leviathan', { position: new THREE.Vector3(-150, 95, -210) });
+    this._makeCreature('leviathan', { position: new THREE.Vector3(-30, 125, -50), radius: 250 });
 
     // apply save
     if (save && typeof save === 'object') {
@@ -214,6 +214,7 @@ export default class Level1 {
     while (spires.length < (low ? 140 : 175) && tries++ < 2000) {
       const x = (rng() * 2 - 1) * 168, z = (rng() * 2 - 1) * 168;
       if (avoid(x, z, 26) || Math.hypot(x, z - 72) < 30) continue;
+      if (O2.some(([ox, oz]) => Math.hypot(ox - x, oz - z) < 9) || LOGS.some((l) => Math.hypot(l.x - x, l.z - z) < 8)) continue;
       const big = rng() < 0.45;
       const r = big ? 1.6 + rng() * 2.4 : 0.5 + rng() * 0.9;
       spires.push({ x, z, r, h: big ? 9 + rng() * 22 : 2 + rng() * 6, col: big });
@@ -342,7 +343,7 @@ export default class Level1 {
     const y = H(R.x, R.z);
     this.rocketPos = new THREE.Vector3(R.x, y, R.z);
     const rk = buildRocket();
-    rk.group.position.set(R.x, y - 0.65, R.z);
+    rk.group.position.set(R.x, y - 0.3, R.z);
     this.root.add(rk.group);
     this.rk = rk;
     const w = this.ctx.world;
@@ -364,7 +365,8 @@ export default class Level1 {
       v.group.rotation.y = Math.atan2(dx, dz);
       this.root.add(v.group);
       const len = Math.hypot(dx, dz) - 2.2;
-      pipes.push(P(new THREE.CylinderGeometry(0.18, 0.18, len, 8), 0x4c5658, R.x + dx * 0.5 + (dx / Math.hypot(dx, dz)) * 1.1, y + 0.2, R.z + dz * 0.5 + (dz / Math.hypot(dx, dz)) * 1.1, Math.PI / 2, Math.atan2(dx, dz), 0));
+      const pg = new THREE.CylinderGeometry(0.18, 0.18, len, 8).rotateX(Math.PI / 2).rotateY(Math.atan2(dx, dz));
+      pipes.push(P(pg, 0x4c5658, R.x + dx * 0.5 + (dx / Math.hypot(dx, dz)) * 1.1, y + 0.2, R.z + dz * 0.5 + (dz / Math.hypot(dx, dz)) * 1.1));
       const anchor = new THREE.Object3D();
       anchor.position.set(x, vy + 1.0, z);
       this.root.add(anchor);
@@ -805,9 +807,9 @@ export default class Level1 {
       const intense = this.st.ph === 'valves' || this.st.ph === 'launch1';
       this.nextStrike = intense ? 3 + Math.random() * 4 : 8 + Math.random() * 12;
       const a = Math.random() * Math.PI * 2, dist = 70 + Math.random() * 120;
-      const x = cam.x + Math.cos(a) * dist, z = cam.z + Math.sin(a) * dist;
+      const x = Math.max(-170, Math.min(170, cam.x + Math.cos(a) * dist)), z = Math.max(-170, Math.min(170, cam.z + Math.sin(a) * dist));
       try {
-        const geos = makeBolt(new THREE.Vector3(x, 150, z), this.h(x, z));
+        const geos = makeBolt(new THREE.Vector3(x, 150, z), Math.min(40, this.h(x, z)));
         const g = mergeGeometries(geos, false);
         geos.forEach((q) => q.dispose());
         this.bolt.geometry.dispose();

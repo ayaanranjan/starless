@@ -25,7 +25,9 @@ export function merged(list, matOpts = {}) {
     for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'color'].includes(k)) g.deleteAttribute(k);
     return g;
   });
-  const g = mergeGeometries(geos, false);
+  let g = null;
+  try { g = mergeGeometries(geos, false); } catch (e) { g = null; }
+  if (!g) { console.warn('[L1] merge failed'); g = new THREE.BufferGeometry(); }
   for (const x of geos) x.dispose();
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.15, ...matOpts });
   const mesh = new THREE.Mesh(g, mat);
@@ -143,7 +145,7 @@ export function buildRocket() {
   ];
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
-    det.push(P(box(0.18, 4.5, 2.6), 0x6a2018, Math.cos(a) * 2.6, 5.0, Math.sin(a) * 2.6, 0, -a, 0));
+    det.push(P(box(0.18, 4.5, 2.6), 0x6a2018, Math.cos(a) * 2.6, 5.0, Math.sin(a) * 2.6, 0, Math.PI / 2 - a, 0));
   }
   // hatch frame (south side, +Z)
   det.push(P(box(1.5, 2.1, 0.2), 0x2c2c2c, 0, 5.2, 2.2));
@@ -159,9 +161,9 @@ export function buildRocket() {
   hatchLamp.position.set(0.95, 6.3, 2.35);
   rocket.add(hatchLamp);
   // launch pad + gantry
-  const gp = [P(cyl(6.5, 7.0, 1.0, 20), 0x2a2a28, 0, 0.5, 0), P(cyl(2.6, 2.6, 0.3, 16), 0x111111, 0, 1.1, 0)];
+  const gp = [P(cyl(6.5, 7.0, 1.0, 20), 0x2a2a28, 0, -0.1, 0), P(cyl(2.6, 2.6, 0.3, 16), 0x111111, 0, 0.45, 0)];
   const gx = 6.2, gh = 30, steel = 0x4a3f36, rust = 0x5a3020;
-  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) gp.push(P(box(0.35, gh, 0.35), steel, gx + sx * 1.6, gh / 2 + 1, sz * 1.6));
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) gp.push(P(box(0.35, gh, 0.35), steel, gx + sx * 1.6, gh / 2, sz * 1.6));
   for (let y = 2; y < gh; y += 3) {
     gp.push(P(box(3.6, 0.22, 0.22), rust, gx, y + 1, -1.6), P(box(3.6, 0.22, 0.22), rust, gx, y + 1, 1.6));
     gp.push(P(box(0.22, 0.22, 3.6), rust, gx - 1.6, y + 1, 0), P(box(0.22, 0.22, 3.6), rust, gx + 1.6, y + 1, 0));
@@ -169,7 +171,7 @@ export function buildRocket() {
   }
   for (const y of [8, 16, 24]) gp.push(P(box(4.2, 0.2, 1.2), steel, gx - 3.0, y, 0), P(box(0.15, 1.0, 1.2), steel, gx - 5.0, y + 0.5, 0));
   // coolant tanks + pipes
-  gp.push(P(cyl(1.0, 1.0, 4.5, 14), 0x6f7c80, -6.5, 3.25, 1.5), P(cyl(1.0, 1.0, 4.5, 14), 0x6f7c80, -6.5, 3.25, -1.5));
+  gp.push(P(cyl(1.0, 1.0, 4.5, 14), 0x6f7c80, -6.5, 2.25, 1.5), P(cyl(1.0, 1.0, 4.5, 14), 0x6f7c80, -6.5, 2.25, -1.5));
   const pad = merged(gp, { roughness: 0.8, metalness: 0.5 });
   g.add(pad);
   // gantry warning light
@@ -182,7 +184,7 @@ export function buildRocket() {
   g.add(warnGlow);
   // scorch decal (shown after failed launch)
   const scorch = new THREE.Mesh(new THREE.CircleGeometry(9, 24), new THREE.MeshBasicMaterial({ color: 0x030202, transparent: true, opacity: 0, depthWrite: false }));
-  scorch.rotation.x = -Math.PI / 2; scorch.position.y = 1.06; scorch.renderOrder = 1;
+  scorch.rotation.x = -Math.PI / 2; scorch.position.y = 0.43; scorch.renderOrder = 1;
   g.add(scorch);
   return { group: g, rocket, bellGlow, hatchLamp, warnMat, warnGlow, scorch, bodyMat, gantryX: gx };
 }
@@ -364,11 +366,11 @@ export function ribcageGeometries(rng, scale = 1, ox = 0, oy = 0, oz = 0, ry = 0
   geos.push(P(new THREE.ConeGeometry(0.5 * scale, 4 * scale, 5), bone, 2 * scale, head.y - 4 * scale, head.z + 8 * scale, 2.6, 0, 0));
   geos.push(P(new THREE.ConeGeometry(0.5 * scale, 4 * scale, 5), bone, -2 * scale, head.y - 4 * scale, head.z + 8 * scale, 2.6, 0, 0));
   // color tubes and transform whole set
-  _m.compose(_v.set(ox, oy, oz), _q.setFromEuler(_e.set(0, ry, 0)), _s.set(1, 1, 1));
   const out = [];
+  const M = new THREE.Matrix4().compose(new THREE.Vector3(ox, oy, oz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ry, 0)), new THREE.Vector3(1, 1, 1));
   for (const g of geos) {
     if (!g.attributes.color) P(g, bone);
-    g.applyMatrix4(_m);
+    g.applyMatrix4(M);
     out.push(g);
   }
   tmp.clear();

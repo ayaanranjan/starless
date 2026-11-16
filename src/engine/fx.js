@@ -101,6 +101,7 @@ export function createFX(ctx) {
   points.frustumCulled = false;
   points.renderOrder = 5;
   points.name = 'fx-particles';
+  points.userData.persistent = true; // pooled across levels (main.js clearScene keeps it)
 
   const tmpColor = new THREE.Color();
 

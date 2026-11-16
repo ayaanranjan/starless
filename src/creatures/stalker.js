@@ -152,7 +152,7 @@ export class Stalker extends WalkerAI {
       const A = this.arms[i], side = A.side;
       const sw = Math.sin(ph + (i ? 0 : Math.PI)) * 0.35 * stride;
       let shx = armF + sw * (st === 'chase' ? 0.5 : 1), shz = side * armSpread, elx = elbow + Math.max(0, sw) * 0.3;
-      if (st === 'stunned') { shx = 2.45 + Math.sin(t * 31 + i) * 0.06; shz = -side * 0.55; elx = 1.75; }
+      if (st === 'stunned') { shx = 1.25 + Math.sin(t * 31 + i) * 0.07; shz = -side * 0.38; elx = 2.05 + Math.sin(t * 27 + i * 2) * 0.06; }
       if (lp < 1) { shx = lp < 0.35 ? 2.3 : 2.3 - (lp - 0.35) / 0.65 * 1.9; elx = 0.2; shz = -side * 0.15; }
       A.sh.rotation.x = damp(A.sh.rotation.x, shx, st === 'stunned' || lp < 1 ? 18 : 6, dt);
       A.sh.rotation.z = damp(A.sh.rotation.z, shz + Math.sin(t * 0.9 + i * 2) * 0.03, 6, dt);
