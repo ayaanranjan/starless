@@ -126,6 +126,8 @@ export function group(parent, x = 0, y = 0, z = 0) {
 // ---------- base creature ----------
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
+const _n1 = new THREE.Vector3(), _n2 = new THREE.Vector3(), _n3 = new THREE.Vector3();
+const _ord = [];
 
 export class CreatureBase {
   constructor(type, ctx, opts = {}) {
@@ -156,6 +158,7 @@ export class CreatureBase {
     this.goal = this.position.clone();
     this.litTime = 0; this.attackCd = 0; this.percT = Math.random() * 0.2;
     this.stuckT = 0; this.sideT = 0; this.sideSign = 1; this.stuckCount = 0;
+    this.mtX = this.position.x; this.mtZ = this.position.z;
     this.loop = null; this.loopName = null; this._loopRetry = 0;
     this.disposed = false;
     this._warned = false;
@@ -165,8 +168,20 @@ export class CreatureBase {
   get isHost() { return this.ctx.isHost !== false; }
 
   setPatrol(points) {
-    this.patrol = (points || []).filter(Boolean).map((p) => new THREE.Vector3(p.x || 0, p.y || 0, p.z || 0));
-    this.patrolIdx = 0;
+    this.patrol = (Array.isArray(points) ? points : []).filter(Boolean).map((p) => (Array.isArray(p)
+      ? new THREE.Vector3(+p[0] || 0, +p[1] || 0, +p[2] || 0) : new THREE.Vector3(+p.x || 0, +p.y || 0, +p.z || 0)));
+    // start from the route point nearest to where we stand (spawns are often mid-route), so the
+    // next leg goes to an adjacent point instead of cutting through walls to patrol[1]
+    this.patrolIdx = this.nearestPatrolIdx();
+    this.offRoute = true;
+  }
+  nearestPatrolIdx() {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < this.patrol.length; i++) {
+      const d = this.patrol[i].distanceToSquared(this.position);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bi;
   }
   setState(s) {
     if (s === this.state) return;
@@ -215,7 +230,10 @@ export class CreatureBase {
     if (!Array.isArray(arr) || arr.length < 5 || this.isHost) return;
     this.netPos.set(+arr[0] || 0, +arr[1] || 0, +arr[2] || 0);
     this.netYaw = +arr[3] || 0;
-    if (!this.hasNet) { this.position.copy(this.netPos); this.yaw = this.netYaw; this._prev.copy(this.position); this.hasNet = true; }
+    if (!this.hasNet) {
+      this.position.copy(this.netPos); this.yaw = this.netYaw; this._prev.copy(this.position); this.hasNet = true;
+      try { this.onTeleport?.(); } catch (e) { /* ignore */ }
+    }
     this.hidden = arr[5] === 1;
     const seq = arr[6] | 0;
     if (seq !== this.atkSeq % 100) { this.atkSeq = seq; this.onAttackAnim?.(); }
@@ -224,8 +242,10 @@ export class CreatureBase {
   }
   interpolate(dt) {
     if (!this.hasNet) return;
-    if (this.position.distanceToSquared(this.netPos) > 100) this.position.copy(this.netPos);
-    else {
+    if (this.position.distanceToSquared(this.netPos) > 100) {
+      this.position.copy(this.netPos); this._prev.copy(this.position);
+      try { this.onTeleport?.(); } catch (e) { /* ignore */ }
+    } else {
       this.position.x = damp(this.position.x, this.netPos.x, 9, dt);
       this.position.y = damp(this.position.y, this.netPos.y, 9, dt);
       this.position.z = damp(this.position.z, this.netPos.z, 9, dt);
@@ -277,6 +297,7 @@ export class CreatureBase {
   }
   // steer toward (tx,tz); returns horizontal distance
   moveToward(tx, tz, speed, dt, turnRate = 7) {
+    this.mtX = tx; this.mtZ = tz; // current steering goal (stuck watchdog)
     const dx = tx - this.position.x, dz = tz - this.position.z;
     const d = Math.sqrt(dx * dx + dz * dz);
     let dirx = 0, dirz = 0;
@@ -380,15 +401,130 @@ export class WalkerAI extends CreatureBase {
     this.idleFor = rand(1, 3);
     this.hitDone = false;
     this.screechT = -99;
+    this.wdPos = this.position.clone(); this.wdT = 0; this.wdTick = 0; this.wdStrikes = 0; this.wdState = null; this.wdGoalD = Infinity;
     this.setState(this.patrol.length ? 'patrol' : 'idle');
-    this.nextPatrolPoint(this.goal);
+    this._rejoinPatrol(this.goal);
+  }
+  setPatrol(points) {
+    super.setPatrol(points);
+    if (this.P && (this.state === 'patrol' || this.state === 'idle')) this._rejoinPatrol(this.goal);
+  }
+  // head for the nearest route point we can see (fallback: nearest), then continue along the route
+  _rejoinPatrol(out) {
+    this.offRoute = false;
+    const pts = this.patrol, n = pts.length;
+    if (!n) return this.nextPatrolPoint(out);
+    const px = this.position.x, pz = this.position.z;
+    const d2 = (i) => { const dx = pts[i].x - px, dz = pts[i].z - pz; return dx * dx + dz * dz; };
+    _ord.length = 0;
+    for (let i = 0; i < n; i++) _ord.push(i);
+    _ord.sort((a, b) => d2(a) - d2(b));
+    let pick = _ord[0];
+    _n1.set(px, this.position.y + 0.8, pz);
+    for (let k = 0; k < n && k < 8; k++) {
+      const p = pts[_ord[k]];
+      if (los(this.ctx, _n1, _n2.set(p.x, p.y + 0.8, p.z))) { pick = _ord[k]; break; }
+    }
+    if (d2(pick) < 1.44) pick = (pick + 1) % n;
+    this.patrolIdx = pick;
+    return out.copy(pts[pick]);
+  }
+  // teleport to the nearest route point no player can see (never within 7m of anyone). true on success.
+  _teleportHidden(tgt) {
+    const pts = this.patrol.length ? this.patrol : [this.home];
+    const players = this.ctx.players;
+    const px = this.position.x, pz = this.position.z;
+    const d2 = (i) => { const dx = pts[i].x - px, dz = pts[i].z - pz; return dx * dx + dz * dz; };
+    _ord.length = 0;
+    for (let i = 0; i < pts.length; i++) _ord.push(i);
+    _ord.sort((a, b) => d2(a) - d2(b));
+    let tests = 0;
+    for (let k = 0; k < _ord.length && tests < 24; k++) {
+      const i = _ord[k], pt = pts[i];
+      if (d2(i) < 2.25) continue; // that's where we're stuck
+      tests++;
+      _n1.set(pt.x, pt.y + 1.3, pt.z);
+      let ok = true;
+      if (players) {
+        for (const p of players.values()) {
+          if (!p || !p.position) continue;
+          const d = p.position.distanceTo(pt);
+          if (d < 7) { ok = false; break; }
+          if (d < (p === tgt ? 70 : 45) && lookAngle(p, _n1) < 1.3 && los(this.ctx, playerEye(p, _n3), _n1)) { ok = false; break; }
+        }
+      }
+      if (!ok) continue;
+      this.position.copy(pt); this.vel.set(0, 0, 0); this._prev.copy(this.position);
+      if (this.patrol.length) this.patrolIdx = i;
+      this.stuckCount = 0; this.sideT = 0; this.stuckT = 0;
+      this.wdPos.copy(this.position); this.wdT = 0; this.wdGoalD = Infinity;
+      try { this.onTeleport?.(); } catch (e) { this._warn(e); }
+      return true;
+    }
+    return false;
+  }
+  // stuck >3s: chase -> teleport out of the target's sight and hunt its last known position;
+  // patrol/investigate -> re-route via the nearest visible route point, teleport on the 2nd strike.
+  _unstick() {
+    this.wdStrikes++;
+    this.stuckCount = 0; this.sideT = 0; this.stuckT = 0;
+    if (this.state === 'chase') {
+      const tgt = validTarget(this.target) ? this.target : null;
+      if (this._teleportHidden(tgt)) {
+        this.goal.copy(this.lastKnown); this.offRoute = true;
+        this.setState('investigate');
+        return;
+      }
+      this.target = null;
+    } else if (this.wdStrikes >= 2 && this._teleportHidden(null)) {
+      this.wdStrikes = 0;
+    }
+    this._rejoinPatrol(this.goal);
+    this.setState('patrol');
+  }
+  // "stuck" = no real progress for 3s: not getting >=1m closer to the steering goal, and not moving freely
+  // with the goal in view (sliding back and forth along a wall does not count). Evaluated at 4Hz.
+  _watchdog(dt) {
+    const st = this.state;
+    let active = st === 'chase' || st === 'investigate' || st === 'patrol';
+    if (active && st === 'chase' && validTarget(this.target)) {
+      const dx = this.target.position.x - this.position.x, dz = this.target.position.z - this.position.z;
+      if (dx * dx + dz * dz < 9) active = false; // circling/striking the target is not "stuck"
+    }
+    const px = this.position.x, pz = this.position.z;
+    const gd = Math.hypot(this.mtX - px, this.mtZ - pz);
+    if (!active || st !== this.wdState) {
+      if (!active) this.wdStrikes = 0;
+      this.wdState = active ? st : null; this.wdT = 0; this.wdTick = 0.25; this.wdPos.copy(this.position); this.wdGoalD = gd;
+      return;
+    }
+    this.wdT += dt; this.wdTick -= dt;
+    if (this.wdTick > 0) return;
+    this.wdTick = 0.25;
+    if (!(this.wdGoalD < Infinity)) { this.wdGoalD = gd; this.wdPos.copy(this.position); this.wdT = 0; return; } // fresh baseline
+    let progress = gd < this.wdGoalD - 1 || gd < 1.5;
+    if (!progress) {
+      const dx = px - this.wdPos.x, dz = pz - this.wdPos.z;
+      if (dx * dx + dz * dz > 3) {
+        _n1.set(px, this.position.y + 0.8, pz);
+        progress = los(this.ctx, _n1, _n2.set(this.mtX, this.position.y + 0.8, this.mtZ));
+      }
+    }
+    if (progress) { this.wdT = 0; this.wdPos.copy(this.position); this.wdGoalD = gd; return; }
+    if (this.wdT >= 3) {
+      this.wdT = 0; this.wdPos.copy(this.position); this.wdGoalD = Infinity;
+      this._unstick();
+    }
   }
   hearNoise(pos, loudness = 0.5) {
-    if (!this.isHost || this.hidden || !pos) return;
+    if (!this.isHost || this.hidden || !pos || !this.P) return;
+    if (Array.isArray(pos)) pos = _n3.set(+pos[0] || 0, +pos[1] || 0, +pos[2] || 0);
+    if (!Number.isFinite(pos.x) || !Number.isFinite(pos.z)) return;
     if (this.state === 'chase' || this.state === 'attack' || this.state === 'stunned' || this.state === 'flee') return;
-    const d = this.position.distanceTo(pos);
+    const py = Number.isFinite(pos.y) ? pos.y : this.position.y;
+    const d = Math.hypot(pos.x - this.position.x, py - this.position.y, pos.z - this.position.z);
     if (d > (loudness || 0) * this.P.hearR * this.aggr) return;
-    this.goal.set(pos.x, pos.y || 0, pos.z);
+    this.goal.set(pos.x, py, pos.z); this.offRoute = true;
     if (this.state !== 'investigate') this.setState('investigate'); else this.stateTime = 0;
   }
   think(dt) {
@@ -425,11 +561,11 @@ export class WalkerAI extends CreatureBase {
     switch (this.state) {
       case 'idle':
         this.stop(dt);
-        if (this.stateTime > this.idleFor) { this.nextPatrolPoint(this.goal); this.setState('patrol'); }
+        if (this.stateTime > this.idleFor) { if (this.offRoute) this._rejoinPatrol(this.goal); else this.nextPatrolPoint(this.goal); this.setState('patrol'); }
         break;
       case 'patrol': {
         const d = this.moveToward(this.goal.x, this.goal.z, P.walk, dt, 4);
-        if (d < 0.9 || this.stuckCount > 4 || this.stateTime > 25) { this.stuckCount = 0; this.idleFor = rand(0.8, 3.5); this.setState('idle'); }
+        if (d < 0.9 || this.stuckCount > 4 || this.stateTime > 25) { if (d >= 0.9) this.offRoute = true; this.stuckCount = 0; this.idleFor = rand(0.8, 3.5); this.setState('idle'); }
         break;
       }
       case 'investigate': {
@@ -439,6 +575,7 @@ export class WalkerAI extends CreatureBase {
       }
       case 'chase': {
         const tgt = this.target;
+        this.offRoute = true;
         if (!validTarget(tgt) || this.t - this.lastSeen > P.loseT * this.aggr) {
           this.goal.copy(this.lastKnown); this.target = null; this.setState('investigate'); break;
         }
@@ -470,10 +607,11 @@ export class WalkerAI extends CreatureBase {
         const dx = this.position.x - this.fleeFrom.x, dz = this.position.z - this.fleeFrom.z;
         const d = Math.max(Math.hypot(dx, dz), 0.01);
         this.moveToward(this.position.x + dx / d * 6, this.position.z + dz / d * 6, P.chase * 0.95, dt, 10);
-        if (this.stateTime >= P.fleeDur) { this.target = null; this.nextPatrolPoint(this.goal); this.setState('patrol'); }
+        if (this.stateTime >= P.fleeDur) { this.target = null; this._rejoinPatrol(this.goal); this.setState('patrol'); }
         break;
       }
       default: this.setState('idle');
     }
+    this._watchdog(dt);
   }
 }

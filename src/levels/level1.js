@@ -135,6 +135,8 @@ export default class Level1 {
       const mod = await import('../creatures/creatures.js');
       this.createCreature = mod.createCreature || mod.default?.createCreature || null;
     } catch (e) { console.warn('[L1] creatures unavailable', e); this.createCreature = null; }
+    // torn down (quit / host left) while the import was pending: don't leak creatures/loops/HUD into the next scene
+    if (this.disposed) return;
     STALKER_ROUTES.forEach((route) => {
       const pts = route.map(([x, z]) => new THREE.Vector3(x, H(x, z), z));
       this._makeCreature('stalker', { position: pts[0].clone(), patrol: pts });
@@ -211,7 +213,9 @@ export default class Level1 {
       }
     }
     let tries = 0;
-    while (spires.length < (low ? 140 : 175) && tries++ < 2000) {
+    // spire count (and every rng() draw below) must NOT depend on quality: spires carry colliders and the
+    // rng stream must stay identical on all peers (low-quality peers just render fewer plants/rocks).
+    while (spires.length < 175 && tries++ < 2000) {
       const x = (rng() * 2 - 1) * 168, z = (rng() * 2 - 1) * 168;
       if (avoid(x, z, 26) || Math.hypot(x, z - 72) < 30) continue;
       if (O2.some(([ox, oz]) => Math.hypot(ox - x, oz - z) < 9) || LOGS.some((l) => Math.hypot(l.x - x, l.z - z) < 8)) continue;
@@ -238,14 +242,16 @@ export default class Level1 {
 
     // bioluminescent tube plants (stalk + glowing tip)
     const plants = [];
-    const nClusters = low ? 26 : 42;
+    const nClusters = 42;
     for (let c = 0; c < nClusters; c++) {
       const cx = (rng() * 2 - 1) * 160, cz = (rng() * 2 - 1) * 160;
       if (Math.hypot(cx - SITES.rocket.x, cz - SITES.rocket.z) < 22) continue;
       const n = 6 + Math.floor(rng() * 8);
+      const keep = !low || c % 5 < 3; // low quality renders ~60% of clusters; rng is consumed either way
       for (let k = 0; k < n; k++) {
         const a = rng() * 6.28, r = rng() * 4.5;
-        plants.push({ x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, h: 0.6 + rng() * 2.4, w: 0.7 + rng() * 0.8, t: (rng() - 0.5) * 0.4, ry: rng() * 6.28 });
+        const pl = { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, h: 0.6 + rng() * 2.4, w: 0.7 + rng() * 0.8, t: (rng() - 0.5) * 0.4, ry: rng() * 6.28 };
+        if (keep) plants.push(pl);
       }
     }
     // a few lining the path north from the lander
@@ -273,12 +279,14 @@ export default class Level1 {
     this.root.add(stalks, tips);
 
     // small rocks
-    const nr = low ? 160 : 300;
+    const NR = 300, nr = low ? 160 : NR;
     const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0x24221d, roughness: 1, flatShading: true }), nr);
-    for (let i = 0; i < nr; i++) {
+    for (let i = 0; i < NR; i++) {
       const x = (rng() * 2 - 1) * 165, z = (rng() * 2 - 1) * 165, r = 0.15 + rng() * rng() * 1.1;
       e.set(rng() * 3, rng() * 3, rng() * 3);
-      m.compose(p.set(x, H(x, z) - r * 0.3, z), q.setFromEuler(e), s.set(r, r * (0.5 + rng() * 0.5), r));
+      const sy = 0.5 + rng() * 0.5;
+      if (i >= nr) continue; // keep the rng stream identical across quality settings
+      m.compose(p.set(x, H(x, z) - r * 0.3, z), q.setFromEuler(e), s.set(r, r * sy, r));
       rocks.setMatrixAt(i, m);
     }
     rocks.receiveShadow = true;
@@ -491,12 +499,33 @@ export default class Level1 {
     return l;
   }
 
+  // Returns a stable record with stop(f). audio.loop() hands back ONE shared inert handle until the
+  // AudioContext exists (first user gesture, e.g. on the ?level=1 path), so _retryLoops re-creates those later.
   _loop(name, pos, volume) {
-    try {
-      const h = this.ctx.audio?.loop?.(name, { position: pos, volume });
-      if (h) this.loops.push(h);
-      return h || null;
-    } catch (e) { return null; }
+    const rec = {
+      name, pos, volume, h: null, stopped: false,
+      stop(f) { if (this.stopped) return; this.stopped = true; try { this.h?.stop?.(f); } catch (e) { /* */ } },
+    };
+    this._startLoop(rec);
+    this.loops.push(rec);
+    this._loopsDirty = true;
+    return rec;
+  }
+
+  _startLoop(rec) {
+    try { rec.h = this.ctx.audio?.loop?.(rec.name, { position: rec.pos, volume: rec.volume }) || null; } catch (e) { rec.h = null; }
+  }
+
+  _retryLoops() {
+    const seen = new Map();
+    for (const r of this.loops) if (!r.stopped && r.h) seen.set(r.h, (seen.get(r.h) || 0) + 1);
+    let pending = false;
+    for (const r of this.loops) {
+      if (r.stopped || (r.h && seen.get(r.h) < 2)) continue;
+      pending = true;
+      this._startLoop(r);
+    }
+    return pending;
   }
 
   _at(delay, fn) { this.timeline.push({ at: this.clock + delay, fn }); }
@@ -590,13 +619,15 @@ export default class Level1 {
   }
 
   // ------------------------------------------------------------ events (all peers)
-  onEvent(type, data = {}, fromId) {
+  onEvent(type, data, fromId) {
     const ctx = this.ctx;
     const host = ctx.isHost;
+    if (this.disposed) return;
+    if (!data || typeof data !== 'object') data = {}; // JSON null over the wire skips the default param
     try {
       if (type === 'part') {
         const i = data.i | 0;
-        if (this.st.parts[i] || this.st.ph !== 'explore') return;
+        if (i < 0 || i >= PARTS.length || this.st.parts[i] || this.st.ph !== 'explore') return;
         this._applyPart(i, false);
         const n = this.st.parts.reduce((a, b) => a + b, 0);
         if (host) this._alertNearest(this.parts[i].pos, 1);
@@ -610,8 +641,8 @@ export default class Level1 {
         if (host) ctx.checkpoint?.();
       } else if (type === 'log') {
         const L = LOGS[data.i | 0];
-        if (!L) return;
-        const lg = this.logs[data.i | 0];
+        const lg = this.logs?.[data.i | 0];
+        if (!L || !lg) return;
         ctx.audio?.play?.('radio', { position: lg.pos });
         ctx.audio?.play?.('static', { position: lg.pos, volume: 0.5 });
         let t = 0.4;
@@ -628,7 +659,7 @@ export default class Level1 {
         this._launchFail();
       } else if (type === 'valve') {
         const i = data.i | 0;
-        if (this.st.ph !== 'valves' || this.st.valves[i]) return;
+        if (i < 0 || i >= this.valves.length || this.st.ph !== 'valves' || this.st.valves[i]) return;
         this._applyValve(i, false);
         if (host) { for (const s of this.stalkers) { if (s?.position && s.position.distanceTo(this.valves[i].pos) < 40) try { s.hearNoise?.(this.valves[i].pos, 0.5); } catch (e) { /* */ } } }
         if (this.st.valves.every((v) => v)) {
@@ -746,6 +777,7 @@ export default class Level1 {
       this._updateLightning(dt, cam);
       this._updateProps(dt, t);
       this._updateSequences(dt, t);
+      if (this._loopsDirty && (this._loopCheckT = (this._loopCheckT || 0) - dt) <= 0) { this._loopCheckT = 2; this._loopsDirty = this._retryLoops(); }
     } catch (e) { if (!this._warned) { this._warned = true; console.warn('[L1] update visuals', e); } }
 
     // creatures
@@ -915,8 +947,12 @@ export default class Level1 {
       if (PHASES.includes(s.ph) && s.ph !== this.st.ph) {
         // only fast-forward; never rewind
         if (PI(s.ph) > PI(this.st.ph)) {
+          const prev = this.st.ph;
           if (PI(s.ph) >= PI('valves')) { this._damageRocket(); this._spawnSwarm(); }
-          if (s.ph === 'launch2' && this.st.ph !== 'launch2') { this._setPhase('launch2'); this._launch2(); }
+          if (s.ph === 'launch2') { this._setPhase('launch2'); this._launch2(); }
+          // missed the one-shot event (late join / reordering): still play the sequence (client: no host-only scheduling)
+          else if (s.ph === 'launch1' && prev === 'install') { this._setPhase('launch1'); this._launch1(); }
+          else if (s.ph === 'valves' && prev === 'launch1') this._launchFail();
           else this._setPhase(s.ph);
         }
       }

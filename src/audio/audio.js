@@ -1228,8 +1228,97 @@ function duck() {
   p.setTargetAtTime(0.9, t + 0.9, 0.9);
 }
 
+// ---------------------------------------------------------------- name aliases (any name used anywhere resolves to a real sound)
+const SFX_ALIAS = {
+  step: 'footstep', footsteps: 'footstep', footstep_snow: 'footstep', footstep_dirt: 'footstep', footstep_rock: 'footstep', footstep_grass: 'footstep',
+  footstep_hull: 'footstep_metal', step_metal: 'footstep_metal', footstep_crystal: 'footstep_metal', footstep_glass: 'footstep_metal',
+  pick: 'pickup', pickup_part: 'pickup', collect: 'pickup', item: 'pickup', part: 'pickup', install: 'valve', insert: 'valve',
+  use: 'interact', press: 'interact', button: 'interact', switch: 'interact', lever: 'interact', error: 'deny', fail: 'deny', locked: 'deny',
+  heart: 'heartbeat', breathe: 'breath', gasp: 'breath', sting: 'stinger', scare: 'stinger', jumpscare: 'stinger', hit: 'stinger',
+  scream: 'screech', shriek: 'screech', roar: 'growl', snarl: 'growl', creature: 'growl', chitter: 'click', clicks: 'click', clicking: 'click',
+  noise: 'static', glitch: 'static', interference: 'static', blip: 'beep', ping_ui: 'beep', chirp: 'beep', comms: 'radio', transmission: 'radio',
+  door_open: 'door', door_close: 'door', hatch: 'door', airlock: 'door', siren: 'alarm', warning: 'alarm', alert: 'alarm',
+  jump_warp: 'warp', warp_jump: 'warp', teleport: 'warp', portal: 'warp', wormhole: 'warp', blast: 'explosion', boom: 'explosion', rupture: 'rocket_fail',
+  launch: 'rocket_launch', liftoff: 'rocket_launch', damage: 'hurt', pain: 'hurt', die: 'death', dead: 'death', respawn: 'revive', heal: 'revive',
+  voice: 'whisper', whispers: 'whisper', groan: 'metal_groan', creak_metal: 'metal_groan', hull_groan: 'metal_groan', lightning: 'thunder', rumble: 'thunder',
+  hover: 'ui_hover', select: 'ui_select', ui_click: 'ui_select', confirm: 'ui_select', ui_back: 'ui_hover', type: 'typing', keys: 'typing',
+  valve_turn: 'valve', seal: 'valve', crystal: 'shard', singularity: 'shard', shard_pickup: 'shard', collapse: 'explosion', gate_open: 'gate', gate_power: 'gate',
+  watcher: 'growl', wraith: 'rwhisper', mimic: 'whisper', stalker: 'click', crawler: 'click', drop: 'drip', water: 'drip', sonar: 'ping',
+};
+const LOOP_ALIAS = {
+  breath_loop: 'creature_breath', stalker: 'creature_breath', stalker_breath: 'creature_breath', chitter: 'creature_chitter', crawler: 'creature_chitter',
+  wraith: 'wraith_hum', hum: 'engine_hum', ship_hum: 'engine_hum', engine: 'engine_hum', drone: 'engine_hum', machine: 'engine_hum', alarm: 'alarm_loop', siren: 'alarm_loop',
+  wind_loop: 'wind', storm: 'wind', void: 'wind', air: 'wind', fire_loop: 'fire', flames: 'fire', burning: 'fire', beacon_loop: 'beacon', signal: 'beacon',
+  charge: 'rocket_charge', rocket: 'rocket_charge', engine_charge: 'rocket_charge', steam_loop: 'steam', vent: 'steam', hiss: 'steam', gas: 'steam',
+  core: 'warp_core', warp: 'warp_core', gate: 'warp_core', portal: 'warp_core', wormhole: 'warp_core', stream: 'warp_core', dark_energy: 'warp_core', watcher: 'wraith_hum',
+};
+const AMB_ALIAS = {
+  level1: 'l1', level2: 'l2', level3: 'l3', chapter1: 'l1', chapter2: 'l2', chapter3: 'l3', ch1: 'l1', ch2: 'l2', ch3: 'l3',
+  1: 'l1', 2: 'l2', 3: 'l3', vesper: 'l1', ark: 'l2', dark: 'l3', void: 'l3', title: 'menu', lobby: 'menu', credits: 'menu', ending: 'cutscene', intro: 'cutscene',
+  none: 'silence', off: 'silence', '': 'silence', stop: 'silence',
+};
+// closest one-shot for a loop name and vice versa (play('fire') / loop('alarm') etc.)
+const LOOP_TO_SFX = { creature_breath: 'breath', creature_chitter: 'click', wraith_hum: 'rwhisper', engine_hum: 'metal_groan', alarm_loop: 'alarm', wind: 'whisper', fire: 'static', beacon: 'ping', rocket_charge: 'rocket_launch', steam: 'valve', warp_core: 'warp' };
+const SFX_TO_LOOP = { breath: 'creature_breath', click: 'creature_chitter', whisper: 'wraith_hum', rwhisper: 'wraith_hum', metal_groan: 'engine_hum', alarm: 'alarm_loop', explosion: 'fire', ping: 'beacon', beep: 'beacon', rocket_launch: 'rocket_charge', valve: 'steam', warp: 'warp_core', thunder: 'wind', static: 'wind', growl: 'creature_breath', heartbeat: 'engine_hum' };
+function keyOf(name) { return String(name == null ? '' : name).trim().toLowerCase().replace(/[\s\-.]+/g, '_'); }
+const resCache = new Map();
+function resolveSfx(name) {
+  if (typeof name === 'string' && SFX[name]) return name;
+  const ck = 's:' + name;
+  if (resCache.has(ck)) return resCache.get(ck);
+  const r = resolveSfx2(name);
+  resCache.set(ck, r);
+  return r;
+}
+function resolveSfx2(name) {
+  const k = keyOf(name);
+  if (SFX[k]) return k;
+  if (SFX_ALIAS[k]) return SFX_ALIAS[k];
+  if (LOOPS[k] && LOOP_TO_SFX[k]) return LOOP_TO_SFX[k];
+  const b = k.replace(/_?(loop|sfx|snd|sound|\d+)$/g, '');
+  if (SFX[b]) return b;
+  if (SFX_ALIAS[b]) return SFX_ALIAS[b];
+  if (LOOPS[b] && LOOP_TO_SFX[b]) return LOOP_TO_SFX[b];
+  for (const s in SFX) if (k.indexOf(s) >= 0) return s;
+  for (const a in SFX_ALIAS) if (a.length > 3 && k.indexOf(a) >= 0) return SFX_ALIAS[a];
+  warn('sfx:' + k, 'unknown sound "' + name + '" (using "click")');
+  return 'click';
+}
+function resolveLoop(name) {
+  if (typeof name === 'string' && LOOPS[name]) return name;
+  const ck = 'l:' + name;
+  if (resCache.has(ck)) return resCache.get(ck);
+  const r = resolveLoop2(name);
+  resCache.set(ck, r);
+  return r;
+}
+function resolveLoop2(name) {
+  const k = keyOf(name);
+  if (LOOPS[k]) return k;
+  if (LOOP_ALIAS[k]) return LOOP_ALIAS[k];
+  const b = k.replace(/_?(loop|sfx|snd|sound|\d+)$/g, '');
+  if (LOOPS[b]) return b;
+  if (LOOP_ALIAS[b]) return LOOP_ALIAS[b];
+  if (SFX_TO_LOOP[b]) return SFX_TO_LOOP[b];
+  for (const s in LOOPS) if (k.indexOf(s) >= 0) return s;
+  for (const a in LOOP_ALIAS) if (a.length > 3 && k.indexOf(a) >= 0) return LOOP_ALIAS[a];
+  warn('loop:' + k, 'unknown loop "' + name + '" (using "wind")');
+  return 'wind';
+}
+function resolveAmb(name) {
+  if (name == null) return 'silence';
+  if (typeof name === 'string' && (AMB[name] || name === 'silence')) return name;
+  const k = keyOf(name);
+  if (AMB[k] || k === 'silence') return k;
+  if (Object.prototype.hasOwnProperty.call(AMB_ALIAS, k)) return AMB_ALIAS[k];
+  const m = /([123])$/.exec(k);
+  if (m) return 'l' + m[1];
+  return null;
+}
+
 // ---------------------------------------------------------------- play / loop / ambience internals
-function playInternal(name, opts, dest) {
+function playInternal(name0, opts, dest) {
+  const name = resolveSfx(name0);
   const fn = SFX[name];
   if (!fn) { warn('sfx:' + name, 'unknown sound "' + name + '"'); return null; }
   const o = opts && typeof opts === 'object' ? opts : {};
@@ -1246,7 +1335,8 @@ function playInternal(name, opts, dest) {
   return g;
 }
 const DUMMY = { setPosition() {}, setVolume() {}, stop() {} };
-function loopInternal(name, opts) {
+function loopInternal(name0, opts) {
+  const name = resolveLoop(name0);
   const b = LOOPS[name];
   if (!b) { warn('loop:' + name, 'unknown loop "' + name + '"'); return DUMMY; }
   const o = opts && typeof opts === 'object' ? opts : {};
@@ -1289,10 +1379,11 @@ function loopInternal(name, opts) {
     },
   };
 }
-function ambienceInternal(name) {
+function ambienceInternal(name0) {
+  const name = resolveAmb(name0);
+  if (name == null) { warn('amb:' + name0, 'unknown ambience "' + name0 + '"'); return; }
   if (name === st.ambName) return;
   const builder = AMB[name];
-  if (!builder && name !== 'silence' && name != null) { warn('amb:' + name, 'unknown ambience "' + name + '"'); return; }
   if (st.amb) kill(st.amb, 2.5);
   st.amb = null;
   st.ambName = name;

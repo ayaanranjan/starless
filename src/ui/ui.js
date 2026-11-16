@@ -715,6 +715,7 @@ function setTeam(list) {
     r.row.classList.toggle('down', !!m.downed);
     r.row.classList.toggle('low', hp < 30);
     if (m.name) nameColors.set(String(m.name), col);
+    if (m.callsign) nameColors.set(String(m.callsign), col);
   });
 }
 
@@ -738,7 +739,9 @@ function chatMessage(name, text) {
   const row = h('div', 'sl-cm', null, E.chatLog);
   const n = name == null || name === '' ? '???' : String(name);
   const nm = h('span', 'sl-cm-n', n, row);
-  const col = nameColors.get(n);
+  // main.js sends the callsign as the chat name -> fall back to the callsign colour
+  const ci = CALLSIGNS.indexOf(n.toUpperCase());
+  const col = nameColors.get(n) || (ci >= 0 ? COLORS[ci] : null);
   if (col) nm.style.color = col;
   h('span', 'sl-cm-t', String(text == null ? '' : text), row);
   while (E.chatLog.children.length > 6) E.chatLog.firstChild.remove();
@@ -762,10 +765,14 @@ function showScreen(name, data) {
   if (ae && ae !== document.body && R.contains(ae) && !(E.scr[name] && E.scr[name].contains(ae))) { try { ae.blur(); } catch (e) { /* ignore */ } }
   if (prev === 'loading' && name !== 'loading') stopFlavor();
   if (prev === 'credits' && name !== 'credits') clearTimeout(creditsT);
+  // A chapter card must never linger behind menu/loading/game-over screens (CSS also hides it on pause/settings).
+  if (CARD_KILL.indexOf(name) >= 0) dismissCard();
+  // Stale level dialogue must not bleed into loading screens or lag a cutscene's own timed lines.
+  if (name !== prev && SUB_KILL.indexOf(name) >= 0) clearSubs();
   try {
     switch (name) {
       case 'menu':
-        if (prev !== 'menu' && prev !== 'settings' && prev !== 'join') resetSession();
+        if (prev !== 'menu') resetSession();
         E.mContinue.style.display = d && (d.hasSave || d.canContinue) ? '' : 'none';
         renumber(E.mNav);
         break;
@@ -776,6 +783,7 @@ function showScreen(name, data) {
         setTimeout(() => { if (current === 'join') E.joinCode.focus(); }, 60);
         break;
       case 'lobby':
+        if (prev !== 'lobby') resetSession();
         if (data && typeof data === 'object') setLobby(data); else renderLobby();
         break;
       case 'settings':
@@ -790,7 +798,7 @@ function showScreen(name, data) {
         E.pCode.textContent = d && d.code ? 'CREW CODE  ' + String(d.code).toUpperCase() : '';
         break;
       case 'gameover': {
-        const canRetry = !d || d.solo || d.isHost || d.isHost === undefined;
+        const canRetry = !d || (d.canRetry != null ? !!d.canRetry : (d.solo || d.isHost || d.isHost === undefined));
         E.gRetry.style.display = canRetry ? '' : 'none';
         E.gWait.style.display = canRetry ? 'none' : '';
         break;
@@ -830,6 +838,8 @@ function setLobby(d) {
   ensure();
   if (!d || typeof d !== 'object') return;
   for (const k of ['code', 'players', 'isHost', 'unlocked', 'status', 'hasSave', 'canContinue', 'saveLevelIndex']) if (k in d) lobby[k] = d[k];
+  // main.js sends the checkpoint as { save: { levelIndex } }
+  if (!('saveLevelIndex' in d) && 'save' in d) lobby.saveLevelIndex = d.save && typeof d.save === 'object' ? d.save.levelIndex : undefined;
   if ('levelIndex' in d && Number.isFinite(Number(d.levelIndex))) selChapter = Number(d.levelIndex) | 0;
   renderLobby();
   if ('status' in d) {
@@ -840,6 +850,13 @@ function setLobby(d) {
 
 // ---- cinematic ----
 let cardT1 = 0, cardT2 = 0, cardResolve = null;
+const CARD_KILL = ['menu', 'lobby', 'join', 'loading', 'gameover', 'credits'];
+const SUB_KILL = ['none', 'loading', 'lobby', 'gameover', 'credits'];
+function dismissCard() {
+  clearTimeout(cardT1); clearTimeout(cardT2);
+  if (E.card) { E.card.classList.remove('on', 'out'); E.card.textContent = ''; }
+  if (cardResolve) { const r = cardResolve; cardResolve = null; r(); }
+}
 function chapterCard(title, subtitle) {
   ensure();
   clearTimeout(cardT1); clearTimeout(cardT2);

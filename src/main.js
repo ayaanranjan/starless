@@ -13,6 +13,7 @@ const PARAM_LEVEL = (() => {
   return Number.isFinite(n) && n >= 1 && n <= NUM_LEVELS ? n - 1 : -1;
 })();
 const NOCUT = params.has('nocut');
+const TEST_MODE = params.has('test'); // automation: drag-look, never request pointer lock, never auto-pause on unlock
 const LEVEL_TITLES = ['CHAPTER I', 'CHAPTER II', 'CHAPTER III'];
 const LEVEL_SUBTITLES = ['THE DROWNING WORLD', 'THE HOLLOW ARK', 'THE DARK BETWEEN'];
 const CUT_MAX_MS = 6 * 60 * 1000;
@@ -149,6 +150,8 @@ let audioReady = false, curAmbience = null;
 const netT = { p: 0, l: 0, ui: 0 };
 const prevDowned = new Map();
 const reviveProxies = new Map();
+const reviveGrace = new Map(); // HOST: id -> ms until which a client's stale 'pst' may not re-down them after a revive
+let lastLockReq = -1e9;
 let pendingEvents = [];
 let persistent = new Set(), camPersistent = new Set();
 let initialEnv = null, initialPost = null, initialExposure = 1;
@@ -220,6 +223,7 @@ function removePlayer(id) {
   if (rp) { safe('RemotePlayer.dispose', () => rp.dispose && rp.dispose()); remotes.delete(id); }
   if (id !== ctx.localId) ctx.players.delete(id);
   prevDowned.delete(id);
+  reviveGrace.delete(id);
   removeRevive(id);
 }
 function syncPlayersFromRoster() {
@@ -271,7 +275,14 @@ function newNet() {
     if (!ctx.isHost || !Array.isArray(m.s)) return;
     const s = ctx.players.get(from);
     if (!s || s.isLocal) return;
+    const prevHealth = s.health;
     unpackInto(s, m.s);
+    const until = reviveGrace.get(from);
+    if (until !== undefined) {
+      // A 'pst' sent before the client handled our 'revive' still says downed: don't re-down them.
+      if (!s.downed || performance.now() > until) reviveGrace.delete(from);
+      else { s.downed = false; s.health = Math.max(+s.health || 0, +prevHealth || 0); }
+    }
     const rp = remotes.get(from);
     if (rp && rp.setNetState) rp.setNetState(s);
   });
@@ -355,7 +366,9 @@ function newNet() {
   on('revive', (m) => { if (!ctx.isHost) applyRevive(String(m.id), m.by != null ? String(m.by) : null); });
   on('skip', () => {
     if (ctx.isHost) return;
-    if (cutSkip) cutSkip(); else pendingSkip = true;
+    // Only remember a skip that arrives while we are heading into / inside a cutscene; a late one
+    // must not silently skip the NEXT chapter's cutscene.
+    if (cutSkip) cutSkip(); else if (state === 'cutscene') pendingSkip = true;
   });
   on('next', (m) => { if (!ctx.isHost) handleNext(+m.levelIndex | 0, (+m.seed) >>> 0); });
   on('over', () => { if (!ctx.isHost) showGameOver(); });
@@ -370,6 +383,7 @@ function newNet() {
   try {
     n.onPeerJoin((id, name) => { if (n === net) safe('peer join', () => onPeerJoin(String(id), name)); });
     n.onPeerLeave((id) => { if (n === net) safe('peer leave', () => onPeerLeave(String(id))); });
+    if (typeof n.onError === 'function') n.onError((msg) => { if (n === net && msg) notify(cleanText(msg, 140), 4); });
   } catch (e) { reportError('net peer hooks', e); }
   return n;
 }
@@ -449,6 +463,8 @@ function refreshLobbyUI(status) {
     isHost: !!ctx.isHost,
     unlocked: store.getUnlocked(),
     canContinue: !!save,
+    hasSave: !!save,
+    saveLevelIndex: save ? save.levelIndex : undefined,
     save: save ? { levelIndex: save.levelIndex } : null,
     status: st,
   }));
@@ -470,9 +486,16 @@ async function ensureBackdrop(my) {
   }
 }
 
+// Hide the interact prompt through interact.js so its cached text is dropped (else it never re-shows
+// after a solo pause while looking at the same object).
+function hidePrompt() {
+  if (interact && typeof interact.hidePrompt === 'function') safe('interact.hidePrompt', () => interact.hidePrompt());
+  else safe('ui.setPrompt', () => ui.setPrompt && ui.setPrompt(null, 0));
+}
+
 function resetHud() {
+  hidePrompt();
   safe('ui', () => {
-    ui.setPrompt && ui.setPrompt(null, 0);
     ui.setDowned && ui.setDowned(false);
     ui.skipHint && ui.skipHint(false);
     ui.letterbox && ui.letterbox(false);
@@ -686,14 +709,26 @@ function resetEnv() {
     else if (initialPost && R.post && R.post.set) R.post.set(initialPost);
   });
   safe('renderer exposure', () => { if (R.renderer) R.renderer.toneMappingExposure = initialExposure; });
-  safe('fx reset', () => { fx.setGlitch && fx.setGlitch(0); });
+  safe('fx reset', () => { if (typeof fx.reset === 'function') fx.reset(); else if (fx.setGlitch) fx.setGlitch(0); });
   safe('audio reset', () => { audio.setTension && audio.setTension(0); audio.setMuffle && audio.setMuffle(0); });
-  safe('ui reset', () => { ui.setObjective && ui.setObjective(''); ui.setPrompt && ui.setPrompt(null, 0); });
+  safe('ui reset', () => { ui.setObjective && ui.setObjective(''); });
+  hidePrompt();
+}
+
+// Finish a cutscene that is still running (flow changed mid-cutscene, or it outlived its timeout).
+// Otherwise its end restores the OLD fog/background/camera near-far on top of the next level / menu.
+function stopCutscene() {
+  const h = currentCut;
+  if (!h) return;
+  currentCut = null;
+  try { h.skip && h.skip(); } catch (e) { reportError('cutscene stop', e); }
 }
 
 function teardownWorld() {
+  stopCutscene();
   levelReady = false;
   pendingEvents = [];
+  reviveGrace.clear();
   if (level) {
     const L = level;
     level = null;
@@ -756,19 +791,25 @@ async function playCut(name, my) {
   if (ctx.isHost) safe('ui.skipHint', () => ui.skipHint && ui.skipHint(true));
   let resolveSkip = null;
   const skipP = new Promise((r) => { resolveSkip = r; });
-  let handle = null;
-  cutSkip = () => {
-    cutSkip = null;
+  let handle = null, skipped = false, settled = false;
+  // A skip can arrive before the handle exists (during the fade-in): remember it instead of losing it,
+  // which used to leave the cutscene running underneath the next level.
+  const doSkip = () => {
+    if (skipped) return;
+    skipped = true;
+    if (cutSkip === doSkip) cutSkip = null;
     try { handle && handle.skip && handle.skip(); } catch (e) { reportError('cutscene skip', e); }
     resolveSkip();
   };
+  cutSkip = doSkip;
+  if (pendingSkip) { pendingSkip = false; doSkip(); }
   try {
     await safeFade(false, 0.4);
-    if (my !== flow) return;
+    if (my !== flow || skipped) return;
     handle = mod.playCutscene(name, ctx);
     currentCut = handle;
     const p = handle && handle.promise ? Promise.resolve(handle.promise) : Promise.resolve();
-    if (pendingSkip) { pendingSkip = false; if (cutSkip) cutSkip(); }
+    p.then(() => { settled = true; }, () => { settled = true; });
     await Promise.race([
       p,
       skipP.then(() => Promise.race([p, sleep(2500)])),
@@ -777,11 +818,15 @@ async function playCut(name, my) {
   } catch (e) {
     reportError('cutscene "' + name + '"', e);
   } finally {
+    if (handle && !settled) { try { handle.skip && handle.skip(); } catch (e) { /* ignore */ } }
     if (currentCut === handle) currentCut = null;
-    cutSkip = null;
-    ctx.cinematic = false;
-    safe('ui.skipHint', () => ui.skipHint && ui.skipHint(false));
-    safe('ui.letterbox', () => ui.letterbox && ui.letterbox(false));
+    if (cutSkip === doSkip) cutSkip = null;
+    if (my === flow) { // a newer flow owns these now
+      pendingSkip = false;
+      ctx.cinematic = false;
+      safe('ui.skipHint', () => ui.skipHint && ui.skipHint(false));
+      safe('ui.letterbox', () => ui.letterbox && ui.letterbox(false));
+    }
   }
 }
 
@@ -854,7 +899,7 @@ async function loadLevel(li, save, seed, my) {
   level = L; ctx.level = L;
   if (L && typeof L.build === 'function') {
     try { await withTimeout(Promise.resolve(L.build(save == null ? null : save)), 45000, 'level build timed out'); }
-    catch (e) { reportError('level.build', e); }
+    catch (e) { if (my === flow) reportError('level.build', e); else console.warn('[STARLESS] stale level.build ended:', e); }
   }
   if (my !== flow) return;
   safe('ui.showLoading', () => ui.showLoading(meta.title + ' — ' + meta.subtitle, 1));
@@ -865,6 +910,20 @@ async function loadLevel(li, save, seed, my) {
   localState.position.set(sp.x, sp.y, sp.z);
   localState.yaw = sp.yaw;
   if (localPlayer) { try { localPlayer.spawn(sp); } catch (e) { reportError('LocalPlayer.spawn', e); } }
+  // Screenshot/debug hooks: ?pose=x,z,yaw,pitch teleports the local player (feet snapped to ground); ?nohud hides the overlay.
+  try {
+    const qp = new URLSearchParams(location.search);
+    const pose = qp.get('pose');
+    if (pose && localPlayer) {
+      const [px, pz, pyaw, ppitch] = pose.split(',').map(Number);
+      if (Number.isFinite(px) && Number.isFinite(pz)) {
+        const gy = ctx.world.groundHeight(px, pz);
+        localPlayer.spawn({ x: px, y: Number.isFinite(gy) ? gy : sp.y, z: pz, yaw: Number.isFinite(pyaw) ? pyaw : 0 });
+        if (Number.isFinite(ppitch)) localPlayer.pitch = ppitch;
+      }
+    }
+    if (qp.has('nohud')) { const u = document.getElementById('ui'); if (u) u.style.visibility = 'hidden'; }
+  } catch (e) { console.warn('[debug pose]', e); }
   for (const s of ctx.players.values()) {
     if (s.id === ctx.localId) continue;
     const rp = spawnPointFor(pts, s.slot | 0);
@@ -895,7 +954,7 @@ async function loadLevel(li, save, seed, my) {
   setAmbience('l' + (li + 1));
   safeFade(false, 1.2);
   netT.p = netT.l = netT.ui = 0;
-  lockPointer();
+  lockPointer(true);
 }
 
 function doRetry(li, seed, save) {
@@ -996,6 +1055,7 @@ function hostRevive(targetId, byId) {
   if (!s || !s.downed) return;
   s.downed = false;
   if (s.health < 1) s.health = 30;
+  if (targetId !== ctx.localId) reviveGrace.set(targetId, performance.now() + 2000);
   broadcast({ t: 'revive', id: targetId, by: byId });
   applyRevive(targetId, byId);
 }
@@ -1007,6 +1067,9 @@ function applyRevive(id, by) {
     localState.downed = false;
     if (localState.health < 1) localState.health = 30;
     safe('ui.setDowned', () => ui.setDowned && ui.setDowned(false));
+  } else if (s) {
+    s.downed = false; // remote copy: the next 'pall'/'pst' carries the real values
+    if (s.health < 1) s.health = 30;
   }
   removeRevive(id);
   safe('audio', () => audio.play('revive', s ? { position: s.position } : {}));
@@ -1060,7 +1123,7 @@ function showGameOver() {
   unlockPointer();
   showLockHint(false);
   safe('ui.setDowned', () => ui.setDowned && ui.setDowned(false));
-  safe('ui.setPrompt', () => ui.setPrompt && ui.setPrompt(null, 0));
+  hidePrompt();
   safe('ui.showScreen', () => ui.showScreen('gameover', { isHost: !!ctx.isHost, canRetry: !!ctx.isHost, multiplayer: mp }));
   safe('audio', () => audio.play('death', { volume: 0.8 }));
 }
@@ -1070,7 +1133,27 @@ function isLocked() {
   try { return input.isLocked ? !!input.isLocked() : !!document.pointerLockElement; }
   catch (e) { return !!document.pointerLockElement; }
 }
-function lockPointer() {
+// Drag-look mode (input.js): pointer lock failed after a real click, or the URL has ?test.
+// In it we never auto-pause on unlock and never show the "click to enter" hint.
+function dragLookOn() {
+  if (TEST_MODE) return true;
+  try { return !!(input && input.dragLook); } catch (e) { return false; }
+}
+function hasActivation() {
+  try {
+    const ua = navigator.userActivation;
+    if (ua && typeof ua.isActive === 'boolean') return ua.isActive;
+  } catch (e) { /* ignore */ }
+  return true; // unknown: let the browser decide
+}
+// auto = not directly inside a click (level start / resume): skip it when the browser would refuse anyway
+// (no user activation) — the click hint then asks for a click instead.
+function lockPointer(auto) {
+  if (TEST_MODE) return;
+  if (auto && !hasActivation()) return;
+  const now = performance.now();
+  if (now - lastLockReq < 250) return; // mousedown + click on the hint arrive back to back
+  lastLockReq = now;
   try { input.lock(); } catch (e) {
     try { const p = R.renderer.domElement.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (_) { /* ignore */ }
   }
@@ -1107,7 +1190,7 @@ function pauseGame() {
   safe('input', () => { input.enabled = false; });
   safe('LocalPlayer.setFrozen', () => localPlayer && localPlayer.setFrozen && localPlayer.setFrozen(true));
   showLockHint(false);
-  safe('ui.setPrompt', () => ui.setPrompt && ui.setPrompt(null, 0));
+  hidePrompt();
   safe('ui.showScreen', () => ui.showScreen('pause', { isHost: !!ctx.isHost, multiplayer: mp, code: lobbyCode }));
   unlockPointer();
 }
@@ -1119,7 +1202,7 @@ function resumeGame() {
   safe('input', () => { input.enabled = !chatOpen; });
   safe('LocalPlayer.setFrozen', () => localPlayer && localPlayer.setFrozen && localPlayer.setFrozen(false));
   safe('ui.showScreen', () => ui.showScreen('hud'));
-  lockPointer();
+  lockPointer(true);
 }
 
 function openChat() {
@@ -1353,7 +1436,7 @@ function tick(dt, now) {
     try { open = typeof ui.isChatOpen === 'function' ? !!ui.isChatOpen() : isTyping(document.activeElement); } catch (e) { open = false; }
     if (!open) closeChat();
   }
-  showLockHint(state === 'playing' && levelReady && !chatOpen && !isLocked());
+  showLockHint(state === 'playing' && levelReady && !chatOpen && !isLocked() && !dragLookOn());
 }
 
 // ------------------------------------------------------------------ boot
@@ -1523,11 +1606,17 @@ async function boot() {
   document.addEventListener('pointerlockchange', () => {
     if (document.pointerLockElement) return;
     lockLostAt = performance.now();
-    if (state === 'playing' && !chatOpen) pauseGame();
+    // Drag-look / ?test: losing (or never getting) the lock must not flip to PAUSED — automated
+    // browsers and embeds would get stuck there. Esc (keydown) still pauses via onEscape().
+    if (state === 'playing' && !chatOpen && !dragLookOn()) pauseGame();
   });
   document.addEventListener('mousedown', (e) => {
-    if (state !== 'playing' || chatOpen || !levelReady || isLocked()) return;
+    if (TEST_MODE || state !== 'playing' || chatOpen || !levelReady || isLocked()) return;
     if (isTyping(e.target)) return;
+    // Lock already failed: the player drags to look; retry the lock now and then, not on every drag.
+    let failed = false;
+    try { failed = !!input.lockFailed; } catch (_) { failed = false; }
+    if (failed && performance.now() - lastLockReq < 4000) return;
     lockPointer();
   });
   window.addEventListener('resize', () => { safe('renderer.resize', () => R.resize && R.resize()); });

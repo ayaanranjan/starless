@@ -116,9 +116,18 @@ export class Interactables {
       this._complete(target);
     }
 
-    // The handler may have removed/disabled it.
-    if (this.items.get(target.id) === target && target.enabled) this._show('[E] ' + target.prompt, progress);
+    // The handler may have removed/disabled it. (ui.js draws the [E] key cap itself.)
+    if (this.items.get(target.id) === target && target.enabled) this._show(target.prompt, progress);
     else this._show(null, 0);
+  }
+
+  /** Hide the prompt now and forget the cached text, so it re-appears when the player looks again
+   *  (main.js calls this on pause / game over instead of ui.setPrompt(null) directly). */
+  hidePrompt() {
+    this._reset();
+    this._lastText = undefined;
+    this._lastProg = -1;
+    try { this.ctx && this.ctx.ui && this.ctx.ui.setPrompt && this.ctx.ui.setPrompt(null, 0); } catch (e) { /* ignore */ }
   }
 
   // ---------------------------------------------------------------- internals

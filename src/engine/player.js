@@ -4,7 +4,8 @@ import * as THREE from 'three';
 const RADIUS = 0.35, HEIGHT = 1.75, CROUCH_HEIGHT = 1.15, EYE = 1.62, CROUCH_EYE = 1.0;
 const WALK = 3.4, SPRINT = 6.2, CROUCH_SPEED = 1.6, JUMP = 6;
 const SENS = 0.0022, PITCH_LIMIT = 1.45;
-const FLASH_INTENSITY = 105, FLASH_DIST = 40, FLASH_ANGLE = 0.42;
+const FLASH_INTENSITY = 220, FLASH_DIST = 55, FLASH_ANGLE = 0.42, FLASH_DECAY = 1.25;
+const BATTERY_DRAIN = 0.16, BATTERY_RECHARGE = 0.4; // per second: ~10 min of light per charge; recharges while off
 
 const GOD = (() => { try { return new URLSearchParams(location.search).has('god'); } catch (e) { return false; } })();
 
@@ -54,7 +55,7 @@ function makeCookie() {
     g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
   }
   const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.colorSpace = THREE.NoColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   cookieTex = tex;
   return tex;
@@ -98,10 +99,11 @@ export class LocalPlayer {
     this._flickT = 0; this._flickOn = false; this._flickLevel = 1;
     this._settings = null; this._settingsT = 0; this._vitalsUiT = 0;
     this._wasCine = false; this._errCount = 0;
+    this._beamBoost = 1; this._beamWant = 1; this._beamT = 0; this._rayO = new THREE.Vector3(); this._rayD = new THREE.Vector3();
 
     // flashlight: SpotLight on a spring-lagged rig parented to the camera
     const high = ctx.quality !== 'low';
-    const spot = new THREE.SpotLight(0xfff1d6, 0, FLASH_DIST, FLASH_ANGLE, 0.45, 1.5);
+    const spot = new THREE.SpotLight(0xfff1d6, 0, FLASH_DIST, FLASH_ANGLE, 0.45, FLASH_DECAY);
     spot.castShadow = true;
     spot.shadow.mapSize.set(high ? 1024 : 512, high ? 1024 : 512);
     spot.shadow.bias = -0.00012;
@@ -410,10 +412,15 @@ export class LocalPlayer {
     const st = this.state, ctx = this.ctx, spot = this.flashlight;
     if (control && ctx.input?.pressed?.('KeyF')) this.toggleFlashlight();
     if (this._flashOn && !cine) {
-      st.battery = Math.max(0, st.battery - 0.55 * dt);
+      st.battery = Math.max(0, st.battery - BATTERY_DRAIN * dt);
       if (st.battery <= 0) { this._flashOn = false; ctx.audio?.play?.('click', { volume: 0.5, pitch: 0.7 }); }
+    } else if (!this._flashOn && !cine && !st.downed && st.battery < 100) {
+      st.battery = Math.min(100, st.battery + BATTERY_RECHARGE * dt);
     }
-    let target = (this._flashOn && !cine) ? FLASH_INTENSITY : 0;
+    // adaptive throw: brighter when the beam centre reaches far (open terrain), never hotter than base up close
+    if (this._flashOn && !cine) this._updateBeamBoost(dt);
+    const lvlScale = (ctx.level && typeof ctx.level.flashlightScale === 'number' && ctx.level.flashlightScale > 0) ? ctx.level.flashlightScale : 1;
+    let target = (this._flashOn && !cine) ? FLASH_INTENSITY * this._beamBoost * lvlScale : 0;
     if (target > 0 && st.battery < 15) {
       this._flickT -= dt;
       if (this._flickT <= 0) {
@@ -449,6 +456,24 @@ export class LocalPlayer {
       this._swayYaw + Math.cos(ph) * 0.012 * a,
       0,
     );
+  }
+
+  _updateBeamBoost(dt) {
+    this._beamBoost = damp(this._beamBoost, this._beamWant, 5, dt);
+    this._beamT -= dt;
+    if (this._beamT > 0) return;
+    this._beamT = 0.1;
+    const world = this.ctx.world, cam = this.ctx.camera;
+    let d = 45;
+    try {
+      if (world && cam && typeof world.raycast === 'function') {
+        cam.getWorldPosition(this._rayO);
+        cam.getWorldDirection(this._rayD);
+        const hit = world.raycast(this._rayO, this._rayD, 45);
+        if (hit && isFinite(hit.distance)) d = hit.distance;
+      }
+    } catch (e) { d = 45; }
+    this._beamWant = clamp(Math.pow(Math.max(d, 0.1) / 7, FLASH_DECAY), 1, 2.6);
   }
 
   _vitals(dt) {
@@ -687,7 +712,7 @@ export class RemotePlayer {
     this.aim = new THREE.Group();
     this.aim.position.set(0, 1.62, 0);
     this.body.add(this.aim);
-    this.light = new THREE.SpotLight(0xfff1d6, 0, 28, FLASH_ANGLE, 0.5, 1.5);
+    this.light = new THREE.SpotLight(0xfff1d6, 0, 40, FLASH_ANGLE, 0.5, FLASH_DECAY);
     this.light.castShadow = false;
     this.light.position.set(0.16, -0.08, -0.18);
     this.light.target.position.set(0.0, -0.1, -10);
@@ -833,10 +858,10 @@ export class RemotePlayer {
 
       // flashlight
       const on = !!st.flashlight;
-      this._lightI = damp(this._lightI, on ? 70 : 0, 18, dt);
+      this._lightI = damp(this._lightI, on ? 150 : 0, 18, dt);
       this.light.intensity = this._lightI < 0.05 ? 0 : this._lightI;
       this.cone.visible = this._lightI > 2;
-      this.cone.material.opacity = 0.05 * (this._lightI / 70);
+      this.cone.material.opacity = 0.05 * (this._lightI / 150);
 
       // name tag
       this._drawTag();

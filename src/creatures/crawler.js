@@ -56,6 +56,14 @@ export class Crawler extends WalkerAI {
     }
     this.startLoop('creature_chitter', 0.55);
   }
+  // re-plant all feet under the body after a teleport / network snap (otherwise legs stretch across the map)
+  onTeleport() {
+    if (!this.legs) return;
+    for (const L of this.legs) {
+      this._restWorld(L.rest, L.foot); L.foot.y = this.position.y;
+      L.from.copy(L.foot); L.to.copy(L.foot); L.t = 1;
+    }
+  }
   _restWorld(rest, out) {
     const c = Math.cos(this.yaw), s = Math.sin(this.yaw);
     return out.set(rest.x * c + rest.z * s + this.position.x, this.position.y, -rest.x * s + rest.z * c + this.position.z);

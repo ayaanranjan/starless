@@ -27,7 +27,7 @@ const PING_TIMEOUT_MS = 5000;
 const SILENCE_DROP_MS = 20000;
 const HELLO_TIMEOUT_MS = 10000;
 const CLOSE_DELAY_MS = 150;
-const CHUNK_CHARS = 4000;
+const CHUNK_CHARS = 2500; // x6 worst-case JSON/UTF-8 growth stays under PeerJS's 16300-byte JSON limit
 const MAX_CHUNKS = 4096;
 
 const INTERNAL = new Set(['hello', 'welcome', 'full', 'ping', 'pong', 'bye', '_chunk']);
@@ -499,7 +499,10 @@ export class Net {
     if (n > MAX_CHUNKS) { console.error('[net] message too large to send', s.length); return false; }
     for (let i = 0; i < n; i++) {
       if (!conn.open) return false;
+      const info = conn._sl;
+      if (info) info.tooBig = false;
       try { conn.send({ t: '_chunk', k, i, n, d: s.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS) }); } catch (e) { return false; }
+      if (info && info.tooBig) { info.tooBig = false; console.error('[net] chunk rejected as too big'); return false; }
     }
     return true;
   }

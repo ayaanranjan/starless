@@ -117,12 +117,17 @@
 .sl-lb.bot { bottom: 0; transform: translateY(101%); }
 .sl-root.letterbox .sl-lb { transform: translateY(0); }
 
-.sl-lock { position: absolute; inset: 0; display: none; place-items: center; cursor: pointer; pointer-events: auto; background: radial-gradient(ellipse at center, rgba(0,0,0,.18), rgba(0,0,0,.62)); }
-.sl-root.lockhint.scr-hud:not(.chatting) .sl-lock { display: grid; }
-.sl-lock-c { text-align: center; }
+.sl-lock { position: absolute; inset: 0; display: none; cursor: pointer; pointer-events: auto; background: radial-gradient(ellipse at center, rgba(0,0,0,.18), rgba(0,0,0,.62)); }
+.sl-root.lockhint.scr-hud:not(.chatting) .sl-lock { display: block; }
+/* lower third: below the crosshair and clear of the centred chapter card (~50% ± 80px) */
+.sl-lock-c { position: absolute; left: 50%; top: max(64%, calc(50% + 104px)); transform: translateX(-50%); width: min(640px, calc(100vw - 32px)); text-align: center; text-shadow: 0 0 10px #000, 0 0 2px #000; }
 .sl-lock-t { font: 500 14px var(--head); letter-spacing: .62em; margin-right: -.62em; color: var(--bone); animation: sl-breathe 3.2s ease-in-out infinite; }
-.sl-lock-s { margin-top: 12px; font: italic 300 17px var(--cine); color: var(--bone-dim); }
-.sl-lock-c::before { content: ''; display: block; width: 1px; height: 46px; margin: 0 auto 22px; background: linear-gradient(transparent, var(--cyan)); }
+.sl-lock-s { margin-top: 8px; font: italic 300 16px var(--cine); color: var(--bone-dim); }
+.sl-lock-c::before { content: ''; display: block; width: 1px; height: 16px; margin: 0 auto 10px; background: linear-gradient(transparent, var(--cyan)); }
+/* the interact prompt shares that band — keep it hidden while the click-to-enter hint is up */
+.sl-root.lockhint.scr-hud:not(.chatting) .sl-prompt { visibility: hidden; }
+/* ...and nudge subtitles a little lower so 2-line dialogue clears it (stays above the vitals block) */
+.sl-root.lockhint.scr-hud:not(.chatting):not(.letterbox) .sl-subs { bottom: max(15vh, 112px); }
 
 .sl-fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
 
@@ -130,6 +135,8 @@
 .sl-card { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; pointer-events: none; }
 .sl-card.on { display: flex; }
 .sl-card.out { opacity: 0; transition: opacity 1.4s ease; }
+/* never show the chapter card through pause / settings / game-over / menu / loading screens */
+.sl-root:not(.scr-hud):not(.scr-none) .sl-card { visibility: hidden; }
 .sl-card-t { font: 500 clamp(24px, 4vw, 52px) var(--head); color: var(--bone); white-space: nowrap; letter-spacing: .55em; margin-right: -.55em; animation: sl-track 5s cubic-bezier(.2,.7,.2,1) both; text-shadow: 0 0 30px rgba(0,0,0,.8); }
 .sl-card-t span { display: inline-block; opacity: 0; animation: sl-letter 1.6s cubic-bezier(.2,.6,.2,1) both; }
 .sl-card-line { width: 0; height: 1px; margin: 24px 0 18px; background: linear-gradient(90deg, transparent, var(--bone-dim), transparent); animation: sl-line 2.4s .7s ease forwards; }
