@@ -300,7 +300,7 @@ export function buildPartModel(kind) {
 
 // ---------- crashed shuttle (fuel cell site) ----------
 export function buildShuttle() {
-  const hull = 0x6c6f70, dark = 0x1f1f1f, scorch = 0x231d18;
+  const hull = 0x464a4b, dark = 0x1a1a1a, scorch = 0x1c1713; // weathered, soot-streaked: reads as a wreck, not a toy
   const parts = [
     P(cyl(2.4, 2.4, 10, 12, ), hull, 0, 1.6, -3.5, Math.PI / 2 - 0.12, 0, 0.18),
     P(new THREE.ConeGeometry(2.4, 4.0, 12), hull, 0.3, 2.4, -10.4, -Math.PI / 2 + 0.15, 0, 0.18),
@@ -310,7 +310,7 @@ export function buildShuttle() {
     P(box(1.6, 3.0, 0.3), dark, 1.6, 1.8, 9.0, 0.4, 0.4, 0.2),
   ];
   for (let i = 0; i < 12; i++) { const a = i * 1.7, r = 5 + (i % 5) * 1.8; parts.push(P(box(0.5 + (i % 3) * 0.4, 0.15, 0.4 + (i % 2) * 0.9), i % 3 ? hull : dark, Math.cos(a) * r, 0.1, Math.sin(a) * r + 1, i, i * 0.5, i * 0.2)); }
-  const m = merged(parts, { roughness: 0.65, metalness: 0.45 });
+  const m = merged(parts, { roughness: 0.82, metalness: 0.3 });
   m.position.y = -0.4;
   const g = new THREE.Group(); g.add(m);
   return g;
