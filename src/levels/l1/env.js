@@ -174,7 +174,7 @@ function bandTexture() {
       const wob = Math.sin(u * Math.PI * 2 * 3 + y * 0.05 + ph[0]) * 2.5 + Math.sin(u * Math.PI * 2 * 7 + ph[1]) * 1.2;
       const yy = y + wob;
       const b = (Math.sin(yy * 0.11 + ph[2]) * 0.5 + 0.5) * 3 + (Math.sin(yy * 0.37) * 0.5 + 0.5) * 2 + yy * 0.02;
-      const i0 = Math.floor(b) % pal.length, i1 = (i0 + 1) % pal.length, f = b - Math.floor(b);
+      const L = pal.length, i0 = ((Math.floor(b) % L) + L) % L, i1 = (i0 + 1) % L, f = b - Math.floor(b); // b can dip below 0 near the top row
       const p0 = pal[i0], p1 = pal[i1];
       const n = 0.9 + Math.random() * 0.1;
       const o = (y * W + x) * 4;

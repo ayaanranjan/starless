@@ -700,8 +700,8 @@ export function makeFlare(opts = {}) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map, color: c, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true, opacity: op, fog: false }));
     s.renderOrder = 60; s.frustumCulled = false; group.add(s); s.userData.op = op; return s;
   };
-  const core = mk(glow, col, 1.0), halo = mk(glow, col.clone().multiplyScalar(0.45), 0.55);
-  const streak = mk(streakT, new THREE.Color(opts.streak ?? 0x86c4ff), 0.85), streak2 = mk(streakT, col, 0.6);
+  const core = mk(glow, col.clone().multiplyScalar(2.4), 1.0), halo = mk(glow, col.clone().multiplyScalar(0.6), 0.6);
+  const streak = mk(streakT, new THREE.Color(opts.streak ?? 0x86c4ff).multiplyScalar(1.8), 0.9), streak2 = mk(streakT, col.clone().multiplyScalar(1.5), 0.7);
   const ghosts = [[0.55, 0.05, 0x7fffd0, glow], [0.2, 0.025, 0xffa070, glow], [-0.35, 0.07, 0x6aa8ff, ringT], [-0.7, 0.035, 0xc89aff, glow], [-1.1, 0.12, 0x80e0ff, ringT]]
     .map(([k, s, c, m]) => ({ k, s, sp: mk(m, new THREE.Color(c), 0.16) }));
   const size = opts.size ?? 1, v = new THREE.Vector3(), D = 10;
@@ -712,15 +712,16 @@ export function makeFlare(opts = {}) {
     update(cam, worldPos, intensity = 1, time = 0) {
       if (!cam) return;
       cam.updateMatrixWorld();
-      v.copy(worldPos).project(cam);
-      const onScreen = v.z < 1 && Math.abs(v.x) < 1.4 && Math.abs(v.y) < 1.4;
+      const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2), tanX = tanY * (cam.aspect || 1.7);
+      v.copy(worldPos).applyMatrix4(cam.matrixWorldInverse); // camera space: independent of near/far
+      const front = v.z < -0.01; const iz = front ? 1 / -v.z : 0; v.set(v.x * iz / tanX, v.y * iz / tanY, 0);
+      const onScreen = front && Math.abs(v.x) < 1.4 && Math.abs(v.y) < 1.4;
       const edge = 1 - Math.min(1, Math.max(0, Math.max(Math.abs(v.x), Math.abs(v.y)) - 0.9) / 0.5);
       const I = onScreen ? Math.max(0, intensity) * edge : 0;
       group.visible = I > 0.002;
       if (!group.visible) return;
-      const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2), tanX = tanY * (cam.aspect || 1.7);
       const H = 2 * tanY * D, flick = 0.94 + 0.06 * Math.sin(time * 13.7) * Math.sin(time * 5.3);
-      place(core, v.x, v.y, cam, tanX, tanY); core.scale.setScalar(H * 0.16 * size * (0.6 + 0.4 * Math.min(1, I))); core.material.opacity = Math.min(1, I) * flick;
+      place(core, v.x, v.y, cam, tanX, tanY); core.scale.setScalar(H * 0.2 * size * (0.6 + 0.4 * Math.min(1, I))); core.material.opacity = Math.min(1, I) * flick;
       place(halo, v.x, v.y, cam, tanX, tanY); halo.scale.setScalar(H * 0.55 * size); halo.material.opacity = halo.userData.op * Math.min(1, I);
       place(streak, v.x, v.y, cam, tanX, tanY); streak.scale.set(H * 2.6 * size * (0.7 + 0.3 * Math.min(1, I)), H * 0.035 * size, 1); streak.material.opacity = streak.userData.op * Math.min(1.2, I) * flick;
       place(streak2, v.x, v.y, cam, tanX, tanY); streak2.scale.set(H * 0.9 * size, H * 0.012 * size, 1); streak2.material.opacity = streak2.userData.op * Math.min(1, I);

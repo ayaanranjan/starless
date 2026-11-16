@@ -906,7 +906,13 @@ export default class Level1 {
       p.core.rotation.y += dt * 0.8;
       p.glow.material.opacity = 0.35 + k * 0.5;
       p.light.intensity = 8 + k * 10;
-      if (p.beam) p.beam.material.opacity = 0.1 + k * 0.08;
+      if (p.beam) {
+        // guide beam: strong from afar, fades to a whisper once you're at the site (no flat neon column up close)
+        const cam = this.ctx.camera, bp = p.beam.position;
+        const dc = cam ? Math.hypot(cam.position.x - bp.x, cam.position.z - bp.z) : 50;
+        const near = Math.min(1, Math.max(0.12, (dc - 5) / 30));
+        p.beam.material.opacity = (0.1 + k * 0.08) * near;
+      }
     }
     // vents + plants
     this.tipMat.emissiveIntensity = 1.3 + Math.sin(t * 0.9) * 0.5;

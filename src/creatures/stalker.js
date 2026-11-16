@@ -5,8 +5,8 @@ import { WalkerAI, acquireShared, limbGeo, mesh, group, damp, clamp, rand, local
 
 function buildShared() {
   // wet, translucent-looking grey-brown hide with cold fresnel rim; glowing bioluminescent nodules flare under the beam
-  const skin = wetSkin({ color: 0x170d0c, roughness: 0.55, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.2,
-    sheen: 0.25, sheenColor: new THREE.Color(0x3a1418), rim: 0x9cc8d4, rimStrength: 0.5, rimPower: 3.4, scale: 14, mottle: 0.5 });
+  const skin = wetSkin({ color: 0x1d100e, roughness: 0.6, metalness: 0.0, clearcoat: 0.4, clearcoatRoughness: 0.3,
+    sheen: 0.4, sheenColor: new THREE.Color(0x4a1a1e), rim: 0x8a5a58, rimStrength: 0.32, rimPower: 3.6, scale: 14, mottle: 0.65 }); // fleshy, not chrome
   const glow = eyeShine(new THREE.MeshStandardMaterial({ color: 0x0a1612, emissive: 0x47ffd0, emissiveIntensity: 1.2, roughness: 0.25 }), 2.5);
   const maw = new THREE.MeshBasicMaterial({ color: 0x3a0505 });
   const claw = clawMat(0x0a0807);
